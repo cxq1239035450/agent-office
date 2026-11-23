@@ -1,0 +1,21 @@
+{
+  "name": "agent-office",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-workspace 2D pixel office for orchestrating Antigravity CLI and Codex CLI agents",
+  "packageManager": "pnpm@10.34.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @agent-office/server --filter @agent-office/web dev",
+    "dev:server": "pnpm --filter @agent-office/server dev",
+    "dev:web": "pnpm --filter @agent-office/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
