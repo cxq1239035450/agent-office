@@ -35,6 +35,7 @@ export interface AddAgentDto {
   title: string;
   provider: CliProvider;
   instructions: string;
+  sprite?: string;
   skills?: string[];
   mcpServers?: string[];
 }
@@ -44,6 +45,7 @@ export interface UpdateAgentDto {
   title?: string;
   provider?: CliProvider;
   instructions?: string;
+  sprite?: string;
   skills?: string[];
   mcpServers?: string[];
 }
@@ -131,7 +133,7 @@ export class RoomsService implements OnModuleInit {
             '你是当前工作目录的主 Agent，负责理解需求、规划任务并协调房间内的子 Agent 完成工作。',
           skills: [],
           mcpServers: [],
-          avatar: { sprite: 'lead-1', deskIndex: 0, accentColor: '#38bdf8' },
+          avatar: { sprite: 'lead', deskIndex: 0, accentColor: '#38bdf8' },
         },
       ],
       mcpServers: [],
@@ -198,7 +200,9 @@ export class RoomsService implements OnModuleInit {
       skills: dto.skills ?? [],
       mcpServers: dto.mcpServers ?? [],
       avatar: {
-        sprite: dto.provider === 'codex' ? 'worker-codex' : 'worker-agy',
+        sprite:
+          dto.sprite?.trim() ||
+          (dto.provider === 'codex' ? 'developer' : 'researcher'),
         deskIndex: room.agents.length,
         accentColor: dto.provider === 'codex' ? '#34d399' : '#a78bfa',
       },
@@ -223,6 +227,7 @@ export class RoomsService implements OnModuleInit {
     if (dto.title !== undefined) agent.title = dto.title.trim() || agent.title;
     if (dto.provider !== undefined) agent.provider = dto.provider;
     if (dto.instructions !== undefined) agent.instructions = dto.instructions;
+    if (dto.sprite !== undefined) agent.avatar.sprite = dto.sprite;
     if (dto.skills !== undefined) agent.skills = dto.skills;
     if (dto.mcpServers !== undefined) agent.mcpServers = dto.mcpServers;
 

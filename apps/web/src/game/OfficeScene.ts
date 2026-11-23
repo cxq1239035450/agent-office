@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { AgentRuntimeState, RoomConfig } from '@agent-office/shared';
-import { registerPixelTextures } from './pixelSprites';
+import { registerPixelTextures, resolveSpriteKey } from './pixelSprites';
 
 const STATUS_STYLE: Record<string, { color: number; label: string }> = {
   idle: { color: 0x94a3b8, label: '待机' },
@@ -376,12 +376,13 @@ export class OfficeScene extends Phaser.Scene {
       deskGfx.fillStyle(0xf8fafc, 1);
       deskGfx.fillRect(ax + 24, ay + 8, 6, 6);
 
-      // Character Sprite
-      const baseKey = isLead
-        ? 'char_lead'
-        : agent.provider === 'codex'
-          ? 'char_codex'
-          : 'char_agy';
+      // Character Sprite (uses 13 chibi pixel presets)
+      const presetId = resolveSpriteKey(
+        agent.avatar?.sprite,
+        agent.roleType,
+        agent.provider,
+      );
+      const baseKey = `char_${presetId}`;
       const sprite = this.add
         .image(ax, ay - 26, `${baseKey}_idle`)
         .setInteractive({ useHandCursor: true });
@@ -399,7 +400,7 @@ export class OfficeScene extends Phaser.Scene {
         },
       );
 
-      // Character animations (typing toggle when active, breathing when idle)
+      // Character animations (work frame when active, subtle walk/breathe when idle)
       if (isActive) {
         let toggle = false;
         this.tweens.add({
@@ -410,17 +411,31 @@ export class OfficeScene extends Phaser.Scene {
           repeat: -1,
           onRepeat: () => {
             toggle = !toggle;
-            sprite.setTexture(toggle ? `${baseKey}_type` : `${baseKey}_idle`);
+            sprite.setTexture(toggle ? `${baseKey}_work` : `${baseKey}_idle`);
           },
         });
       } else {
+        let step = 0;
         this.tweens.add({
           targets: sprite,
-          y: ay - 24,
-          duration: 1300 + (aIdx % 3) * 200,
+          x: ax + ((aIdx % 2 === 0 ? 1 : -1) * 10),
+          duration: 1600 + (aIdx % 3) * 260,
           yoyo: true,
           repeat: -1,
           ease: 'Sine.easeInOut',
+          onUpdate: () => {
+            step += 1;
+            if (step % 18 === 0) {
+              const phase = (step / 18) % 3;
+              sprite.setTexture(
+                phase === 0
+                  ? `${baseKey}_walkA`
+                  : phase === 1
+                    ? `${baseKey}_walkB`
+                    : `${baseKey}_idle`,
+              );
+            }
+          },
         });
       }
 

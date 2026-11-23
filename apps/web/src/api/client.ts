@@ -74,6 +74,7 @@ export const api = {
       title: string;
       provider: CliProvider;
       instructions: string;
+      sprite?: string;
       skills?: string[];
       mcpServers?: string[];
     },
@@ -90,7 +91,7 @@ export const api = {
         AgentProfile,
         'name' | 'title' | 'provider' | 'instructions' | 'skills' | 'mcpServers'
       >
-    >,
+    > & { sprite?: string },
   ) =>
     request<AgentProfile>(`/api/rooms/${roomId}/agents/${agentId}`, {
       method: 'PATCH',
