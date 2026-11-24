@@ -2,7 +2,7 @@
 
 一个基于 **2D 办公场景** 的多文件夹、多 Agent 协同工作台，原生接入 **Antigravity CLI (`agy`)** 与 **Codex CLI (`codex`)**。
 
-核心隐喻：**1 个本地文件夹 = 1 个独立办公室房间**，每个房间拥有 1 名主 Agent（主管）和多名子 Agent（专员），各自可独立配置职责、分配 Skill、接入 MCP，并通过 2D 办公场景实时呈现工作状态。
+核心隐喻：**1 个本地文件夹 = 1 个独立办公室房间 = 1 层楼**，每个房间拥有 1 名主 Agent（主管）和多名子 Agent（专员），各自可独立配置职责、分配 Skill、接入 MCP，并通过 2D 办公场景实时呈现工作状态。
 
 ---
 
@@ -13,7 +13,7 @@
   - **Antigravity CLI (`agy`)**：通过 `agy --add-dir <dir> --output-format stream-json -p` 执行并实时消费 NDJSON 事件流，自动同步 `.agents/mcp_config.json`。
   - **Codex CLI (`codex`)**：通过 `codex exec --json`（后续平滑升级至 `codex app-server` JSON-RPC 2.0 持久会话）执行，自动同步 `AGENTS.md` / `.codex/`。
 - **跨 CLI 主从协作（Orchestrator MCP）**：内置 `@agent-office/orchestrator-mcp`，暴露 `list_room_agents`、`delegate_task`、`ask_user` 工具，支持主 Agent（如 `agy`）直接派发任务给房间内的子 Agent（如 `codex`）。
-- **实时 2D 办公表现层**：后端通过 WebSocket (`/ws/office`) 广播标准化 `OfficeEvent`，前端基于 **React + Zustand + Phaser 3** 渲染多房间工位、角色状态与气泡提示。
+- **实时 2D 办公表现层**：后端通过 WebSocket (`/ws/office`) 广播标准化 `OfficeEvent`，前端主界面基于 **React + Zustand + CSS** 渲染纵向办公楼、职业人物与状态气泡；旧 Phaser 场景保留在源码中。
 
 ---
 
@@ -98,3 +98,13 @@ pnpm dev
 - [ ] **Phase 2**：升级 Codex Adapter 至 `codex app-server` JSON-RPC 持久会话 + Antigravity Hooks 人工审批流
 - [ ] **Phase 3**：接入 Tiled Tilemap 与像素办公精灵动画（走路寻路、打字、翻书、连线派发任务）
 - [ ] **Phase 4**：Electron 桌面端打包（系统托盘、原生目录选择器、桌面审批通知）
+
+## 暖色办公楼界面
+
+点击「新建工作区」输入本地文件夹路径即可增加一层楼，点击楼层或人物打开右侧管理面板。点击「设计预览」查看四层楼与全部 13 位人物，预览不会写入文件或执行任务。
+
+楼层按创建时间排序，修改房间不会改变顺序；移除后连续编号。当前为状态驱动的 CSS 动作，完整行走与寻路尚未接入。CLI 可用仅代表检测到程序，实际任务需要本机认证与配置。
+
+设计与素材说明见 [设计说明](docs/design/README.md)。
+
+验证命令：`pnpm typecheck`、`pnpm build`；Node 22.6+ 运行 `node --experimental-strip-types --test tests/building.test.mjs`。

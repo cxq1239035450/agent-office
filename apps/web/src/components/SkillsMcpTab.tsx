@@ -1,36 +1,36 @@
-import { useState } from 'react';
-import type { RoomConfig } from '@agent-office/shared';
-import { api } from '../api/client';
+import { useState } from "react";
+import type { RoomConfig } from "@agent-office/shared";
+import { api } from "../api/client";
 
 interface Props {
   room: RoomConfig;
-  mode: 'skills' | 'mcp';
+  mode: "skills" | "mcp";
   onRefreshRoom: () => Promise<void>;
 }
 
 const inputStyle: React.CSSProperties = {
-  padding: '6px 8px',
+  padding: "6px 8px",
   borderRadius: 6,
-  border: '1px solid #475569',
-  background: '#0f172a',
-  color: '#f8fafc',
+  border: "1px solid var(--border-strong)",
+  background: "var(--bg-card)",
+  color: "var(--text-main)",
   fontSize: 12,
-  width: '100%',
-  boxSizing: 'border-box',
+  width: "100%",
+  boxSizing: "border-box",
 };
 
 export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
   // Skill form
-  const [skillId, setSkillId] = useState('');
-  const [skillDesc, setSkillDesc] = useState('');
-  const [skillContent, setSkillContent] = useState('');
+  const [skillId, setSkillId] = useState("");
+  const [skillDesc, setSkillDesc] = useState("");
+  const [skillContent, setSkillContent] = useState("");
 
   // MCP form
-  const [mcpName, setMcpName] = useState('');
-  const [transport, setTransport] = useState<'stdio' | 'http'>('stdio');
-  const [command, setCommand] = useState('');
-  const [argsText, setArgsText] = useState('');
-  const [url, setUrl] = useState('');
+  const [mcpName, setMcpName] = useState("");
+  const [transport, setTransport] = useState<"stdio" | "http">("stdio");
+  const [command, setCommand] = useState("");
+  const [argsText, setArgsText] = useState("");
+  const [url, setUrl] = useState("");
 
   async function handleAddSkill(e: React.FormEvent) {
     e.preventDefault();
@@ -41,9 +41,9 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
       content: skillContent.trim(),
       enabled: true,
     });
-    setSkillId('');
-    setSkillDesc('');
-    setSkillContent('');
+    setSkillId("");
+    setSkillDesc("");
+    setSkillContent("");
     await onRefreshRoom();
   }
 
@@ -53,40 +53,42 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
     await api.upsertMcp(room.id, {
       name: mcpName.trim(),
       transport,
-      command: transport === 'stdio' ? command.trim() : undefined,
+      command: transport === "stdio" ? command.trim() : undefined,
       args:
-        transport === 'stdio'
+        transport === "stdio"
           ? argsText
-              .split(' ')
+              .split(" ")
               .map((s) => s.trim())
               .filter(Boolean)
           : undefined,
-      url: transport === 'http' ? url.trim() : undefined,
+      url: transport === "http" ? url.trim() : undefined,
       enabled: true,
     });
-    setMcpName('');
-    setCommand('');
-    setArgsText('');
-    setUrl('');
+    setMcpName("");
+    setCommand("");
+    setArgsText("");
+    setUrl("");
     await onRefreshRoom();
   }
 
-  if (mode === 'skills') {
+  if (mode === "skills") {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <form
           onSubmit={handleAddSkill}
           style={{
             padding: 10,
             borderRadius: 8,
-            background: '#0f172a',
-            border: '1px solid #334155',
-            display: 'flex',
-            flexDirection: 'column',
+            background: "var(--bg-card)",
+            border: "1px solid var(--border-subtle)",
+            display: "flex",
+            flexDirection: "column",
             gap: 8,
           }}
         >
-          <strong style={{ fontSize: 12 }}>新建 Skill（自动生成 SKILL.md）</strong>
+          <strong style={{ fontSize: 12 }}>
+            新建 Skill（自动生成 SKILL.md）
+          </strong>
           <input
             placeholder="Skill ID（如：code-review）"
             value={skillId}
@@ -111,20 +113,22 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
             style={{
               padding: 7,
               borderRadius: 6,
-              border: 'none',
-              background: '#38bdf8',
-              color: '#0f172a',
+              border: "none",
+              background: "var(--accent)",
+              color: "var(--bg-card)",
               fontWeight: 600,
-              cursor: 'pointer',
+              cursor: "pointer",
             }}
           >
             + 保存 Skill
           </button>
         </form>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {room.skills.length === 0 && (
-            <span style={{ fontSize: 12, color: '#64748b' }}>暂无 Skill</span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              暂无 Skill
+            </span>
           )}
           {room.skills.map((skill) => (
             <div
@@ -132,18 +136,20 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
               style={{
                 padding: 8,
                 borderRadius: 8,
-                background: '#0f172a',
-                border: '1px solid #334155',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
+                background: "var(--bg-card)",
+                border: "1px solid var(--border-subtle)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
               }}
             >
               <div>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>{skill.id}</div>
-                <div style={{ fontSize: 10, color: '#64748b' }}>{skill.path}</div>
+                <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                  {skill.path}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <input
                   type="checkbox"
                   checked={skill.enabled}
@@ -154,13 +160,15 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
                   }
                 />
                 <button
-                  onClick={() => api.removeSkill(room.id, skill.id).then(onRefreshRoom)}
+                  onClick={() =>
+                    api.removeSkill(room.id, skill.id).then(onRefreshRoom)
+                  }
                   style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#f87171',
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--danger)",
                     fontSize: 11,
-                    cursor: 'pointer',
+                    cursor: "pointer",
                   }}
                 >
                   删除
@@ -174,20 +182,22 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <form
         onSubmit={handleAddMcp}
         style={{
           padding: 10,
           borderRadius: 8,
-          background: '#0f172a',
-          border: '1px solid #334155',
-          display: 'flex',
-          flexDirection: 'column',
+          background: "var(--bg-card)",
+          border: "1px solid var(--border-subtle)",
+          display: "flex",
+          flexDirection: "column",
           gap: 8,
         }}
       >
-        <strong style={{ fontSize: 12 }}>接入 MCP Server（自动同步双 CLI）</strong>
+        <strong style={{ fontSize: 12 }}>
+          接入 MCP Server（自动同步双 CLI）
+        </strong>
         <input
           placeholder="服务名（如：filesystem / github）"
           value={mcpName}
@@ -196,13 +206,13 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
         />
         <select
           value={transport}
-          onChange={(e) => setTransport(e.target.value as 'stdio' | 'http')}
+          onChange={(e) => setTransport(e.target.value as "stdio" | "http")}
           style={inputStyle}
         >
           <option value="stdio">stdio（本地命令）</option>
           <option value="http">http（远程端点）</option>
         </select>
-        {transport === 'stdio' ? (
+        {transport === "stdio" ? (
           <>
             <input
               placeholder="启动命令（如：npx）"
@@ -230,20 +240,22 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
           style={{
             padding: 7,
             borderRadius: 6,
-            border: 'none',
-            background: '#a78bfa',
-            color: '#0f172a',
+            border: "none",
+            background: "#a78bfa",
+            color: "var(--bg-card)",
             fontWeight: 600,
-            cursor: 'pointer',
+            cursor: "pointer",
           }}
         >
           + 添加 MCP Server
         </button>
       </form>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {room.mcpServers.length === 0 && (
-          <span style={{ fontSize: 12, color: '#64748b' }}>暂无 MCP Server</span>
+          <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+            暂无 MCP Server
+          </span>
         )}
         {room.mcpServers.map((srv) => (
           <div
@@ -251,22 +263,22 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
             style={{
               padding: 8,
               borderRadius: 8,
-              background: '#0f172a',
-              border: '1px solid #334155',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
+              background: "var(--bg-card)",
+              border: "1px solid var(--border-subtle)",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
             }}
           >
             <div>
               <div style={{ fontSize: 12, fontWeight: 600 }}>{srv.name}</div>
-              <div style={{ fontSize: 10, color: '#94a3b8' }}>
-                {srv.transport === 'stdio'
-                  ? `${srv.command ?? ''} ${(srv.args ?? []).join(' ')}`
+              <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                {srv.transport === "stdio"
+                  ? `${srv.command ?? ""} ${(srv.args ?? []).join(" ")}`
                   : srv.url}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
                 type="checkbox"
                 checked={srv.enabled}
@@ -277,13 +289,15 @@ export function SkillsMcpTab({ room, mode, onRefreshRoom }: Props) {
                 }
               />
               <button
-                onClick={() => api.removeMcp(room.id, srv.name).then(onRefreshRoom)}
+                onClick={() =>
+                  api.removeMcp(room.id, srv.name).then(onRefreshRoom)
+                }
                 style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: '#f87171',
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--danger)",
                   fontSize: 11,
-                  cursor: 'pointer',
+                  cursor: "pointer",
                 }}
               >
                 删除
