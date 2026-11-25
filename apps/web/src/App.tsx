@@ -6,24 +6,39 @@ import {
   type FormEvent,
 } from "react";
 import type {
+  ApprovalRequest,
   CliProvider,
   OfficeEvent,
   RoomConfig,
+  TaskRecord,
 } from "@agent-office/shared";
 import { api, type HealthResponse } from "./api/client";
 import { AgentsTab } from "./components/AgentsTab";
 import { FilesLogsTab } from "./components/FilesLogsTab";
-import { SkillsMcpTab } from "./components/SkillsMcpTab";
+import { AbilityCenter, type CapabilityPage } from "./components/AbilityCenter";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { StudioScene } from "./components/StudioScene";
+import { StudioTaskPanel } from "./components/StudioTaskPanel";
+import "./styles/studioHome.css";
 import { Building } from "./components/Building";
 import { Character } from "./components/Character";
 import { Icon } from "./components/Icon";
-import { buildingFloors, STATUS_LABELS } from "./game/buildingModel";
 import { PREVIEW_ROOMS } from "./game/preview";
 import { resolveSpriteKey } from "./game/pixelSprites";
 import { useOfficeStore } from "./store/officeStore";
 
 type TabKey = "overview" | "agents" | "skills" | "mcp" | "files";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+function readPersistedBool(key: string, fallback = false): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : raw === "1";
+  } catch {
+    return fallback;
+  }
+}
+
 export function App() {
   const {
     rooms,
@@ -38,6 +53,25 @@ export function App() {
     selectAgent,
     pushEvent,
   } = useOfficeStore();
+
+  const [leftCollapsed, setLeftCollapsed] = useState(() =>
+    readPersistedBool("agent_office_left_collapsed", false),
+  );
+  const [rightCollapsed, setRightCollapsed] = useState(
+    () =>
+      window.matchMedia("(max-width: 1100px)").matches ||
+      readPersistedBool("agent_office_right_collapsed", false),
+  );
+
+  useEffect(() => {
+    const compact = window.matchMedia("(max-width: 1100px)");
+    const collapse = () => {
+      if (compact.matches) setRightCollapsed(true);
+    };
+    compact.addEventListener("change", collapse);
+    return () => compact.removeEventListener("change", collapse);
+  }, []);
+
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthFailed, setHealthFailed] = useState(false);
   const [connection, setConnection] = useState("连接中");
@@ -49,6 +83,15 @@ export function App() {
   const [provider, setProvider] = useState<CliProvider>("codex");
   const [theme, setTheme] = useState<RoomConfig["theme"]>("modern");
   const [tab, setTab] = useState<TabKey>("overview");
+  const [capabilityPage, setCapabilityPage] = useState<CapabilityPage | null>(
+    null,
+  );
+  const [view, setView] = useState<"studio" | "building">("studio");
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [taskRoomId, setTaskRoomId] = useState<string | null>(null);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState("");
+  const [taskRevision, setTaskRevision] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [preview, setPreview] = useState(false);
   const [previewRoom, setPreviewRoom] = useState("preview-3");
@@ -57,18 +100,55 @@ export function App() {
   const [runs, setRuns] = useState<Record<string, boolean>>({});
   const [outputs, setOutputs] = useState<Record<string, string>>({});
   const [showOutput, setShowOutput] = useState(false);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvalNotes, setApprovalNotes] = useState<Record<string, string>>(
+    {},
+  );
   const createDialog = useRef<HTMLDialogElement>(null);
+
+  const toggleLeft = () =>
+    setLeftCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("agent_office_left_collapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+
+  const toggleRight = (forceOpen?: boolean) =>
+    setRightCollapsed((prev) => {
+      const next = forceOpen !== undefined ? !forceOpen : !prev;
+      try {
+        localStorage.setItem("agent_office_right_collapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+
   const visibleRooms = preview ? PREVIEW_ROOMS : rooms;
   const roomId = preview ? previewRoom : selectedRoomId;
   const agentId = preview ? previewAgent : selectedAgentId;
   const selectedRoom = visibleRooms.find((r) => r.id === roomId) ?? null;
-  const floors = buildingFloors(visibleRooms);
-  const floorNumber = floors.find((f) => f.room.id === roomId)?.floor;
   const lead = selectedRoom?.agents.find(
     (a) => a.id === selectedRoom.leadAgentId,
   );
-  const runKey = selectedRoom && lead ? `${selectedRoom.id}:${lead.id}` : "";
-  const running = !!runs[runKey];
+  const selectedMember = selectedRoom?.agents.find((a) => a.id === agentId);
+  const dockAgent = selectedMember ?? lead;
+  const isPassThrough = Boolean(dockAgent && lead && dockAgent.id !== lead.id);
+  const runKey =
+    selectedRoom && dockAgent ? `${selectedRoom.id}:${dockAgent.id}` : "";
+  const dockRuntime = runKey ? agentStates[runKey] : undefined;
+  const running =
+    !!runs[runKey] ||
+    Boolean(
+      !preview &&
+      dockRuntime &&
+      dockRuntime.status !== "idle" &&
+      dockRuntime.status !== "error",
+    );
   const output = outputs[runKey];
   const events = preview ? [] : recentEvents.filter((e) => e.roomId === roomId);
 
@@ -100,7 +180,7 @@ export function App() {
       };
       socket.onclose = () => {
         if (!disposed) {
-          setConnection("连接中断，重连中");
+          setConnection("重连中…");
           retry = setTimeout(connect, 3000);
         }
       };
@@ -112,34 +192,108 @@ export function App() {
       socket?.close();
     };
   }, [setRooms, pushEvent]);
+
   useEffect(() => {
     if (showCreate) createDialog.current?.showModal();
     else createDialog.current?.close();
   }, [showCreate]);
+
   useEffect(() => {
     setPrompt("");
     setShowOutput(false);
   }, [roomId]);
-  const chooseRoom = (id: string) => {
-    if (preview) {
-      setPreviewRoom(id);
-      setPreviewAgent(null);
-    } else selectRoom(id);
-    setTab("overview");
+
+  useEffect(() => {
+    if (preview || !selectedRoomId) {
+      setApprovals([]);
+      return;
+    }
+    let cancelled = false;
+    setApprovals([]);
+    api
+      .listApprovals(selectedRoomId, true)
+      .then((items) => {
+        if (!cancelled) setApprovals(items);
+      })
+      .catch(() => {
+        /* Ignore background approval polling errors */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preview, selectedRoomId, recentEvents[0]?.timestamp]);
+
+  const openInspectorTab = (targetTab: TabKey) => {
+    if (targetTab === "skills" || targetTab === "mcp") {
+      setCapabilityPage(targetTab);
+      return;
+    }
+    setTab(targetTab);
+    if (rightCollapsed) toggleRight(true);
   };
+
+  const chooseRoom = (id: string) => {
+    if (
+      id !== roomId &&
+      prompt.trim() &&
+      !window.confirm("切换工作区会放弃当前未发送的内容，继续？")
+    )
+      return false;
+    if (id !== roomId) {
+      setPrompt("");
+      setShowOutput(false);
+      if (preview) {
+        setPreviewRoom(id);
+        setPreviewAgent(null);
+      } else selectRoom(id);
+    }
+    setView("studio");
+    setTab("overview");
+    return true;
+  };
+
   const chooseAgent = (id: string, member: string) => {
+    if (
+      (id !== roomId || member !== dockAgent?.id) &&
+      prompt.trim() &&
+      !window.confirm("切换沟通对象会放弃当前未发送的内容，继续？")
+    )
+      return false;
+    if (id !== roomId || member !== dockAgent?.id) {
+      setPrompt("");
+      setShowOutput(false);
+    }
     if (preview) {
       setPreviewRoom(id);
       setPreviewAgent(member);
-      setTab("overview");
-    } else {
-      selectAgent(id, member);
-      setTab("agents");
-    }
+    } else selectAgent(id, member);
+    setView("studio");
+    setTab("overview");
+    return true;
   };
+
   const refreshRoom = useCallback(async () => {
     if (selectedRoomId) upsertRoom(await api.getRoom(selectedRoomId));
   }, [selectedRoomId, upsertRoom]);
+
+  async function handleResolveApproval(
+    approvalId: string,
+    decision: "approved" | "rejected",
+  ) {
+    if (!selectedRoomId) return;
+    try {
+      await api.resolveApproval(
+        selectedRoomId,
+        approvalId,
+        decision,
+        approvalNotes[approvalId]?.trim() || undefined,
+      );
+      setApprovals((prev) => prev.filter((a) => a.id !== approvalId));
+    } catch (e) {
+      setError(`处理审批失败：${message(e)}`);
+    }
+  }
+
   async function createRoom(e: FormEvent) {
     e.preventDefault();
     if (creating) return;
@@ -155,6 +309,7 @@ export function App() {
       upsertRoom(created);
       selectRoom(created.id);
       setPreview(false);
+      setView("studio");
       setTab("overview");
       setShowCreate(false);
       setRoomName("");
@@ -165,6 +320,7 @@ export function App() {
       setCreating(false);
     }
   }
+
   async function removeRoom(id: string) {
     if (!window.confirm("从大楼移除此工作区？本地工作文件会保留。")) return;
     try {
@@ -175,397 +331,546 @@ export function App() {
       setError(message(e));
     }
   }
+
   async function sendPrompt(e: FormEvent) {
     e.preventDefault();
-    if (preview || !selectedRoom || !lead || !prompt.trim() || running) return;
+    if (preview || !selectedRoom || !dockAgent || !prompt.trim()) return;
     const key = runKey;
     const text = prompt.trim();
     setRuns((v) => ({ ...v, [key]: true }));
-    setOutputs((v) => ({ ...v, [key]: "" }));
     setShowOutput(true);
     setPrompt("");
     try {
-      const result = await api.runAgent(selectedRoom.id, lead.id, text);
+      const { task } = await api.dispatchTask(selectedRoom.id, dockAgent.id, {
+        prompt: text,
+        routeMode: isPassThrough ? "pass_through" : "router",
+        isolateWorktree: isPassThrough,
+        async: true,
+      });
+      setTaskRevision((value) => value + 1);
+      const wtLine = task.worktreeBranch
+        ? `\n分支: ${task.worktreeBranch}`
+        : "";
       setOutputs((v) => ({
         ...v,
-        [key]: result.success
-          ? result.output || "本轮执行完成。"
-          : result.error || "任务执行失败",
+        [key]: `已发送给 ${dockAgent.name}\n任务: ${task.id}${wtLine}`,
       }));
     } catch (e) {
-      setOutputs((v) => ({ ...v, [key]: `执行失败：${message(e)}` }));
+      setOutputs((v) => ({ ...v, [key]: `派发失败：${message(e)}` }));
     } finally {
       setRuns((v) => ({ ...v, [key]: false }));
     }
   }
+
+  const shellClass = [
+    "office-shell studio-home",
+    leftCollapsed ? "left-collapsed" : "",
+    rightCollapsed ? "right-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const pendingApprovals = approvals.filter(
+    (approval) => approval.roomId === roomId,
+  );
+  const visibleTasks =
+    taskRoomId === roomId
+      ? tasks.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      : [];
+  const lastTask =
+    visibleTasks.find((task) => task.agentId === dockAgent?.id) ??
+    visibleTasks[0];
+  const latestEvent = recentEvents.find(
+    (event) => event.roomId === selectedRoomId,
+  )?.timestamp;
+  useEffect(() => {
+    let cancelled = false;
+    if (preview || !selectedRoomId) {
+      setTasks([]);
+      setTaskRoomId(null);
+      setTasksError("");
+      setTasksLoading(false);
+      return;
+    }
+    setTasksLoading(true);
+    setTasksError("");
+    api
+      .listTasks(selectedRoomId, 30)
+      .then((records) => {
+        if (!cancelled) {
+          setTasks(records);
+          setTaskRoomId(selectedRoomId);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setTasksError(message(error));
+      })
+      .finally(() => {
+        if (!cancelled) setTasksLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRoomId, preview, latestEvent, taskRevision]);
+
+  const startCreate = () => {
+    if (
+      prompt.trim() &&
+      !window.confirm("创建并进入新工作区会放弃当前未发送的内容，继续？")
+    )
+      return;
+    setError("");
+    setShowCreate(true);
+  };
+  const togglePreview = () => {
+    if (
+      prompt.trim() &&
+      !window.confirm("切换预览会放弃当前未发送的内容，继续？")
+    )
+      return;
+    setPrompt("");
+    setShowOutput(false);
+    setPreview((value) => !value);
+    setView("studio");
+    setTab("overview");
+  };
+
   return (
-    <div className="office-shell">
-      <header className="app-header">
+    <div className={shellClass}>
+      {capabilityPage && selectedRoom && !preview && (
+        <AbilityCenter
+          key={selectedRoom.id}
+          room={selectedRoom}
+          initialPage={capabilityPage}
+          agentId={selectedAgentId}
+          onClose={() => setCapabilityPage(null)}
+          onRefresh={refreshRoom}
+          onContact={(id) => {
+            if (chooseAgent(selectedRoom.id, id)) setCapabilityPage(null);
+          }}
+        />
+      )}
+      <header className="app-header studio-header">
+        <button
+          type="button"
+          className="btn-icon"
+          onClick={toggleLeft}
+          aria-label={leftCollapsed ? "展开工作区导航" : "收起工作区导航"}
+        >
+          <Icon name="panel-left" />
+        </button>
         <a
           className="brand"
           href="#"
           onClick={(e) => {
             e.preventDefault();
-            setTab("overview");
+            setView("building");
           }}
         >
-          <Icon name="building" size={30} />
-          <strong>Agent 大楼</strong>
+          <span className="brand-mark">
+            <Icon name="layers" size={27} />
+          </span>
+          <strong>Agent Office</strong>
         </a>
-        <span className="engine-status">
-          <i
-            className={
-              health?.providers.codex.available ? "online-dot" : "offline-dot"
-            }
-          />
-          Codex CLI{" "}
-          {health === null
-            ? healthFailed
-              ? "连接失败"
-              : "检测中"
-            : health.providers.codex.available
-              ? "可用"
-              : "未检测到"}
-        </span>
         <div className="header-actions">
+          {pendingApprovals.length > 0 && (
+            <button
+              className="btn studio-attention"
+              onClick={() => openInspectorTab("overview")}
+            >
+              <Icon name="shield" />
+              待确认 {pendingApprovals.length}
+            </button>
+          )}
           <button
-            className={`btn ${preview ? "preview-active" : ""}`}
-            onClick={() => {
-              setPreview(!preview);
-              setTab("overview");
-            }}
+            className="btn studio-preview-toggle"
+            onClick={togglePreview}
+            aria-pressed={preview}
+            title="只读设计预览"
           >
-            <Icon name="play" size={16} />
-            {preview ? "退出设计预览" : "设计预览"}
+            <Icon name="play" size={15} />
+            {preview ? "退出预览" : "预览"}
           </button>
           <button
             className="btn"
             disabled={!selectedRoom || preview}
-            onClick={() => setTab("files")}
+            onClick={() => setCapabilityPage("members")}
+            aria-label="能力配置"
           >
-            <Icon name="file" size={16} />
-            任务记录
+            <Icon name="settings" size={17} />
+            <span>能力配置</span>
+          </button>
+          <button
+            className="btn-icon"
+            onClick={() => toggleRight()}
+            aria-label={rightCollapsed ? "展开任务面板" : "收起任务面板"}
+          >
+            <Icon name="panel-right" />
           </button>
         </div>
       </header>
-      <nav className="workspace-sidebar" aria-label="工作区导航">
-        <h2>
-          <Icon name="layers" />
-          我的工作区
-        </h2>
-        <button
-          className="btn btn-primary create-workspace"
-          onClick={() => {
-            setError("");
-            setShowCreate(true);
-          }}
-        >
-          <Icon name="plus" size={18} />
-          新建工作区
-        </button>
-        <div className="floor-nav">
-          {floors.map(({ room, floor }) => (
-            <button
-              key={room.id}
-              className={`floor-nav-item ${room.id === roomId ? "active" : ""}`}
-              onClick={() => chooseRoom(room.id)}
-            >
-              <span className="floor-index">{floor}F</span>
-              <span>
-                <strong>{room.name}</strong>
-                <small>
-                  {room.agents.length} 位成员 ·{" "}
-                  {room.skills.filter((s) => s.enabled).length} 项技能
-                </small>
+
+      <WorkspaceSidebar
+        rooms={visibleRooms}
+        selectedRoom={selectedRoom}
+        selectedAgentId={agentId}
+        states={agentStates}
+        preview={preview}
+        collapsed={leftCollapsed}
+        onToggle={toggleLeft}
+        onRoom={chooseRoom}
+        onAgent={(id) => {
+          if (selectedRoom) chooseAgent(selectedRoom.id, id);
+        }}
+        onCreate={startCreate}
+        onOverview={() => setView("building")}
+        onCapability={setCapabilityPage}
+      />
+
+      <main className="studio-main">
+        <header className="studio-toolbar">
+          <div className="studio-title">
+            <h1>
+              <Icon
+                name={view === "building" ? "building" : "team"}
+                size={28}
+              />
+              <span title={selectedRoom?.name}>
+                {view === "building"
+                  ? "我的办公大楼"
+                  : selectedRoom?.name || "我的工作室"}
               </span>
-            </button>
-          ))}
-          {!floors.length && (
-            <p className="nav-empty">
-              还没有工作区
-              <br />
-              创建房间，大楼就会增加一层。
-            </p>
-          )}
-        </div>
-        <div className="sidebar-tools">
-          {(
-            [
-              ["skills", "spark", "技能库"],
-              ["mcp", "plug", "MCP 连接"],
-              ["files", "folder", "工作文件"],
-            ] as const
-          ).map(([key, icon, label]) => (
-            <button
-              key={key}
-              className={tab === key ? "active" : ""}
-              disabled={!selectedRoom || preview}
-              onClick={() => setTab(key)}
-            >
-              <Icon name={icon} />
-              {label}
-              <Icon name="arrow" size={14} />
-            </button>
-          ))}
-        </div>
-        <div className="sidebar-bottom">
-          <Icon name="folder" size={18} />
-          <span>
-            本地工作空间<small>{preview ? "只读设计预览" : connection}</small>
-          </span>
-        </div>
-      </nav>
-      <main className="office-main">
-        <div className="stage-heading">
-          <div>
-            <h1>工作区总览</h1>
-            <p>
-              {visibleRooms.length} 个工作区 <span>·</span>{" "}
-              {visibleRooms.reduce((n, r) => n + r.agents.length, 0)} 位成员
-            </p>
+            </h1>
           </div>
-          <span className="stage-note">一个工作区，一层新可能</span>
-        </div>
+          <div className="studio-view-actions">
+            <div className="studio-view-tabs" aria-label="工作区视图">
+              <button
+                aria-pressed={view === "studio"}
+                onClick={() => setView("studio")}
+              >
+                办公区
+              </button>
+              <button
+                aria-pressed={view === "building"}
+                onClick={() => setView("building")}
+              >
+                大楼总览
+              </button>
+            </div>
+            <button
+              className="btn"
+              disabled={!selectedRoom || preview}
+              onClick={() => openInspectorTab("agents")}
+            >
+              <Icon name="team" size={16} />
+              管理成员
+            </button>
+          </div>
+        </header>
         {error && !showCreate && (
           <div className="error-banner" role="alert">
-            {error}
+            <span>{error}</span>
             <button aria-label="关闭错误提示" onClick={() => setError("")}>
-              <Icon name="close" size={16} />
+              <Icon name="close" />
             </button>
           </div>
         )}
-        {preview && (
-          <div className="preview-banner">
-            <Icon name="play" size={14} />
-            设计预览 · 示例人物与动作，不会执行任务或写入文件
-          </div>
-        )}
-        <Building
-          rooms={visibleRooms}
-          states={agentStates}
-          selectedRoomId={roomId}
-          selectedAgentId={agentId}
-          preview={preview}
-          zoom={zoom}
-          onRoom={chooseRoom}
-          onAgent={chooseAgent}
-          onCreate={() => {
-            setError("");
-            setShowCreate(true);
-          }}
-        />
-        <div className="stage-footer">
-          <div className="legend">
-            <span>
-              <i className="offline-dot" />
-              待命
-            </span>
-            <span>
-              <i className="online-dot" />
-              工作中
-            </span>
-            <span>
-              <i className="waiting-dot" />
-              等待确认
-            </span>
-          </div>
-          <div className="zoom-controls">
-            <button
-              aria-label="缩小大楼"
-              disabled={zoom <= 0.7}
-              onClick={() => setZoom((n) => Math.max(0.7, n - 0.1))}
-            >
-              −
-            </button>
-            <button aria-label="重置缩放" onClick={() => setZoom(1)}>
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              aria-label="放大大楼"
-              disabled={zoom >= 1.5}
-              onClick={() => setZoom((n) => Math.min(1.5, n + 0.1))}
-            >
-              +
-            </button>
-          </div>
-        </div>
-      </main>
-      <aside className="inspector-drawer" aria-label="工作区详情">
-        {selectedRoom ? (
-          <>
-            <header className="drawer-header">
-              <div>
-                <Icon name="folder" />
-                <h2>
-                  {floorNumber}F {selectedRoom.name}
-                </h2>
-                <span className="room-state">
-                  {preview ? "预览" : "工作区"}
-                </span>
-              </div>
-              <p title={selectedRoom.folderPath}>
-                <Icon name="folder" size={14} />
-                {selectedRoom.folderPath}
-              </p>
-            </header>
-            <div className="tab-bar">
-              {(
-                [
-                  ["overview", "总览"],
-                  ["agents", "团队"],
-                  ["skills", "技能"],
-                  ["mcp", "MCP"],
-                  ["files", "文件"],
-                ] as const
-              ).map(([key, label]) => (
+        {view === "building" ? (
+          <section className="studio-building-stage">
+            <div className="studio-building-tools">
+              <div className="zoom-controls">
                 <button
-                  key={key}
-                  disabled={preview && key !== "overview"}
-                  className={`tab-btn ${tab === key ? "active" : ""}`}
-                  onClick={() => setTab(key)}
+                  aria-label="缩小大楼"
+                  disabled={zoom <= 0.7}
+                  onClick={() =>
+                    setZoom((n) => Math.max(0.7, +(n - 0.1).toFixed(1)))
+                  }
                 >
-                  {label}
+                  −
                 </button>
-              ))}
+                <button aria-label="重置缩放" onClick={() => setZoom(1)}>
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  aria-label="放大大楼"
+                  disabled={zoom >= 1.4}
+                  onClick={() =>
+                    setZoom((n) => Math.min(1.4, +(n + 0.1).toFixed(1)))
+                  }
+                >
+                  +
+                </button>
+              </div>
             </div>
-            <div className="drawer-body" key={`${selectedRoom.id}:${tab}`}>
+            <Building
+              rooms={visibleRooms}
+              states={agentStates}
+              selectedRoomId={roomId}
+              selectedAgentId={agentId}
+              zoom={zoom}
+              preview={preview}
+              onRoom={chooseRoom}
+              onAgent={chooseAgent}
+              onCreate={startCreate}
+            />
+          </section>
+        ) : selectedRoom ? (
+          <StudioScene
+            room={selectedRoom}
+            states={agentStates}
+            selectedAgentId={agentId}
+            preview={preview}
+            onAgent={(id) => chooseAgent(selectedRoom.id, id)}
+          />
+        ) : (
+          <section className="studio-welcome">
+            <Character id="lead" size={120} />
+            <h2>暂无工作区</h2>
+            <button className="btn btn-emerald" onClick={startCreate}>
+              <Icon name="plus" />
+              新建工作区
+            </button>
+            <button className="btn" onClick={togglePreview}>
+              预览
+            </button>
+          </section>
+        )}
+
+        {selectedRoom && (
+          <section className="studio-conversation" aria-label="与成员沟通">
+            <header>
+              <div className="studio-recipient">
+                <Character
+                  id={
+                    dockAgent
+                      ? resolveSpriteKey(
+                          dockAgent.avatar.sprite,
+                          dockAgent.roleType,
+                          dockAgent.provider,
+                        )
+                      : "lead"
+                  }
+                  size={40}
+                />
+                <select
+                  id="studio-recipient"
+                  aria-label="沟通对象"
+                  value={dockAgent?.id ?? ""}
+                  onChange={(e) => chooseAgent(selectedRoom.id, e.target.value)}
+                >
+                  {selectedRoom.agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                      {a.id === selectedRoom.leadAgentId ? " · 主管" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn btn-sm"
+                disabled={preview}
+                onClick={() => openInspectorTab("files")}
+              >
+                任务记录
+                <Icon name="arrow" size={14} />
+              </button>
+            </header>
+            {lastTask && !preview && (
+              <div className="studio-dispatch-summary" aria-label="最近任务">
+                <strong>{lastTask.prompt}</strong>
+                {lastTask.summary && <p>{lastTask.summary}</p>}
+              </div>
+            )}
+            <form className="studio-composer" onSubmit={sendPrompt}>
+              <textarea
+                rows={2}
+                aria-label={
+                  isPassThrough
+                    ? `给 ${dockAgent?.name} 的指令`
+                    : "给主管的任务"
+                }
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                disabled={preview || !dockAgent}
+              />
+              <button
+                type="submit"
+                className="btn btn-emerald"
+                disabled={preview || !dockAgent || !prompt.trim()}
+              >
+                <Icon name="send" size={18} />
+                {isPassThrough ? "发送" : "交给主管"}
+              </button>
+            </form>
+            <div className="studio-run-status">
+              {!preview && connection !== "实时连接" && (
+                <span role="status">{connection}</span>
+              )}
+              {!preview &&
+                dockAgent &&
+                (healthFailed ||
+                  (health &&
+                    !health.providers[dockAgent.provider]?.available)) && (
+                  <span role="status">
+                    {dockAgent.provider === "antigravity"
+                      ? "Antigravity"
+                      : "Codex"}{" "}
+                    {healthFailed ? "离线" : "未就绪"}
+                  </span>
+                )}
+              {(output || running) && (
+                <button
+                  aria-expanded={showOutput}
+                  aria-controls="studio-output"
+                  onClick={() => setShowOutput((value) => !value)}
+                >
+                  {showOutput ? "收起回执" : "派发回执"}
+                </button>
+              )}
+              {running && !preview && (
+                <button
+                  className="studio-stop"
+                  onClick={() =>
+                    dockAgent &&
+                    api
+                      .stopAgent(
+                        selectedRoom.id,
+                        dockAgent.id,
+                        dockRuntime?.taskId,
+                      )
+                      .catch((e) => setError(message(e)))
+                  }
+                >
+                  停止当前任务
+                </button>
+              )}
+            </div>
+            {showOutput && (output || running) && (
+              <div id="studio-output" className="studio-output" role="status">
+                <pre>
+                  {[output, dockRuntime?.bubbleText]
+                    .filter(Boolean)
+                    .join("\n\n") || "执行中…"}
+                </pre>
+              </div>
+            )}
+          </section>
+        )}
+      </main>
+
+      <aside
+        className="inspector-drawer studio-inspector"
+        aria-label="工作区详情"
+        aria-hidden={rightCollapsed}
+        inert={rightCollapsed}
+      >
+        <div className="studio-inspector-nav">
+          <div role="group" aria-label="详情面板">
+            <button
+              aria-pressed={tab === "overview"}
+              onClick={() => setTab("overview")}
+            >
+              团队任务
+            </button>
+            <button
+              aria-pressed={tab === "agents"}
+              disabled={!selectedRoom || preview}
+              onClick={() => setTab("agents")}
+            >
+              成员管理
+            </button>
+            <button
+              aria-pressed={tab === "files"}
+              disabled={!selectedRoom || preview}
+              onClick={() => setTab("files")}
+            >
+              任务与文件
+            </button>
+          </div>
+          <button
+            className="btn-icon"
+            aria-label="收起任务面板"
+            onClick={() => toggleRight(false)}
+          >
+            <Icon name="chevron-right" size={16} />
+          </button>
+        </div>
+        <div className="drawer-body" key={`${roomId}:${tab}`}>
+          {selectedRoom ? (
+            <>
               {tab === "overview" && (
-                <>
-                  <section className="detail-section">
-                    <h3>
-                      <Icon name="clock" size={18} />
-                      当前动态
-                    </h3>
-                    {preview ? (
-                      <div className="task-summary">
-                        <strong>{selectedRoom.name}协作预览</strong>
-                        <p>
-                          选择人物查看形象。创建真实工作区后，任务状态将在这里实时更新。
-                        </p>
+                <StudioTaskPanel
+                  room={selectedRoom}
+                  tasks={visibleTasks}
+                  events={events}
+                  loading={tasksLoading}
+                  error={tasksError}
+                  preview={preview}
+                  onRetry={() => setTaskRevision((value) => value + 1)}
+                  onTasks={() => setTab("files")}
+                  onAgent={(id) => chooseAgent(selectedRoom.id, id)}
+                >
+                  {!preview && pendingApprovals.length > 0 && (
+                    <section className="approval-banner">
+                      <div className="approval-banner-title">
+                        <Icon name="shield" size={15} />
+                        待确认 ({pendingApprovals.length})
                       </div>
-                    ) : events.length ? (
-                      <div className="task-summary">
-                        <strong>{STATUS_LABELS[events[0].status]}</strong>
-                        <p>{events[0].bubbleText || "正在处理当前任务"}</p>
-                        <small>
-                          {new Date(events[0].timestamp).toLocaleTimeString(
-                            "zh-CN",
-                          )}
-                        </small>
-                      </div>
-                    ) : (
-                      <div className="task-summary">
-                        <strong>团队已就位</strong>
-                        <p>向主 Agent 提交需求，或选择成员直接派发任务。</p>
-                      </div>
-                    )}
-                  </section>
-                  <section className="detail-section">
-                    <h3>
-                      <Icon name="team" size={18} />
-                      成员<span>{selectedRoom.agents.length}</span>
-                    </h3>
-                    <div className="member-list">
-                      {selectedRoom.agents.map((a) => {
-                        const status = preview
-                          ? "idle"
-                          : (agentStates[`${selectedRoom.id}:${a.id}`]
-                              ?.status ?? "idle");
-                        return (
-                          <button
-                            key={a.id}
-                            className={`member-row ${agentId === a.id ? "selected" : ""}`}
-                            onClick={() => chooseAgent(selectedRoom.id, a.id)}
-                          >
-                            <Character
-                              id={resolveSpriteKey(
-                                a.avatar?.sprite,
-                                a.roleType,
-                                a.provider,
-                              )}
-                              size={46}
-                            />
-                            <span>
-                              <strong>{a.name}</strong>
-                              <small>{a.title}</small>
-                            </span>
-                            <em className={`member-status status-${status}`}>
-                              {preview ? "预览" : STATUS_LABELS[status]}
-                            </em>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
-                  <section className="detail-section">
-                    <h3>
-                      <Icon name="layers" size={18} />
-                      能力配置
-                    </h3>
-                    <div className="capability-chips">
-                      {selectedRoom.skills
-                        .filter((s) => s.enabled)
-                        .map((s) => (
-                          <button key={s.id} onClick={() => setTab("skills")}>
-                            <Icon name="spark" size={14} />
-                            {s.id}
-                          </button>
-                        ))}
-                      {selectedRoom.mcpServers
-                        .filter((s) => s.enabled)
-                        .map((s) => (
-                          <button key={s.name} onClick={() => setTab("mcp")}>
-                            <Icon name="plug" size={14} />
-                            {s.name}
-                          </button>
-                        ))}
-                      {!selectedRoom.skills.some((s) => s.enabled) &&
-                        !selectedRoom.mcpServers.some((s) => s.enabled) && (
-                          <p className="muted">
-                            {preview
-                              ? "为不同角色分配专属技能与工具。"
-                              : "尚未配置技能或 MCP，可在管理面板添加。"}
-                          </p>
-                        )}
-                    </div>
-                    <button
-                      className="btn btn-primary full-width"
-                      disabled={preview}
-                      onClick={() => setTab("agents")}
-                    >
-                      <Icon name="team" size={17} />
-                      管理成员与能力
-                    </button>
-                  </section>
-                  <section className="detail-section">
-                    <h3>
-                      <Icon name="file" size={18} />
-                      工作文件
-                    </h3>
-                    <button
-                      className="file-link"
-                      disabled={preview}
-                      onClick={() => setTab("files")}
-                    >
-                      <Icon name="folder" size={18} />
-                      <span>浏览工作区文件</span>
-                      <Icon name="arrow" size={16} />
-                    </button>
-                  </section>
-                </>
+                      {pendingApprovals.map((ap) => (
+                        <div key={ap.id} className="approval-card">
+                          <div>
+                            <strong>{ap.agentName}</strong>：{ap.question}
+                          </div>
+                          <input
+                            className="field-input"
+                            aria-label={`${ap.agentName}的审批批注`}
+                            placeholder="批注（可选）"
+                            value={approvalNotes[ap.id] ?? ""}
+                            onChange={(e) =>
+                              setApprovalNotes((prev) => ({
+                                ...prev,
+                                [ap.id]: e.target.value,
+                              }))
+                            }
+                          />
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-emerald"
+                              style={{ flex: 1 }}
+                              onClick={() =>
+                                handleResolveApproval(ap.id, "approved")
+                              }
+                            >
+                              <Icon name="check" size={14} />
+                              批准
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger-ghost"
+                              onClick={() =>
+                                handleResolveApproval(ap.id, "rejected")
+                              }
+                            >
+                              驳回
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </section>
+                  )}
+                </StudioTaskPanel>
               )}
               {!preview && tab === "agents" && (
                 <AgentsTab
+                  onConfigure={() => setCapabilityPage("members")}
                   room={selectedRoom}
                   selectedAgentId={selectedAgentId}
-                  onSelectAgent={(id) => selectAgent(selectedRoom.id, id)}
-                  onRefreshRoom={refreshRoom}
-                />
-              )}
-              {!preview && (tab === "skills" || tab === "mcp") && (
-                <SkillsMcpTab
-                  room={selectedRoom}
-                  mode={tab}
+                  onSelectAgent={(id) => {
+                    const target = id ?? lead?.id;
+                    if (target && chooseAgent(selectedRoom.id, target))
+                      setTab("agents");
+                  }}
                   onRefreshRoom={refreshRoom}
                 />
               )}
@@ -577,107 +882,23 @@ export function App() {
                   onRemoveRoom={removeRoom}
                 />
               )}
-            </div>
-          </>
-        ) : (
-          <div className="inspector-empty">
-            <Character size={110} />
-            <h2>欢迎来到你的 Agent 大楼</h2>
-            <p>
-              每层楼连接一个本地文件夹。
-              <br />
-              为成员分配职责，让工作有序展开。
-            </p>
-            <button className="btn" onClick={() => setPreview(true)}>
-              先看看办公室
-            </button>
-          </div>
-        )}
-      </aside>
-      <footer className="command-dock">
-        <div className="lead-info">
-          <Character
-            id={
-              lead
-                ? resolveSpriteKey(
-                    lead.avatar?.sprite,
-                    lead.roleType,
-                    lead.provider,
-                  )
-                : "lead"
-            }
-            size={57}
-          />
-          <div>
-            <strong>{lead?.name || "主 Agent"}</strong>
-            <small>
-              <i className={running ? "online-dot" : "offline-dot"} />
-              {preview
-                ? "设计预览，不执行任务"
-                : running
-                  ? "正在处理你的需求…"
-                  : selectedRoom
-                    ? `负责 ${selectedRoom.name}`
-                    : "创建工作区后开始协作"}
-            </small>
-          </div>
-        </div>
-        <form onSubmit={sendPrompt}>
-          <input
-            aria-label="给主 Agent 的任务"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="告诉主 Agent，你希望团队完成什么…"
-            disabled={preview || !lead || running}
-          />
-          <button
-            className="send-button"
-            aria-label="发送任务"
-            disabled={preview || !lead || running || !prompt.trim()}
-          >
-            <Icon name="send" size={19} />
-          </button>
-        </form>
-        {running && (
-          <button
-            className="btn"
-            onClick={() =>
-              selectedRoom &&
-              lead &&
-              api
-                .stopAgent(selectedRoom.id, lead.id)
-                .catch((e) => setError(message(e)))
-            }
-          >
-            停止
-          </button>
-        )}
-        <button
-          className="output-toggle"
-          disabled={!output && !running}
-          onClick={() => setShowOutput(!showOutput)}
-        >
-          <Icon name="file" size={17} />
-          执行结果
-        </button>
-        {showOutput && (output || running) && (
-          <div className="output-popover">
-            <div>
-              <strong>本轮执行结果</strong>
-              <button
-                aria-label="收起执行结果"
-                onClick={() => setShowOutput(false)}
-              >
-                <Icon name="close" size={16} />
+            </>
+          ) : (
+            <div className="studio-panel-empty">
+              <Icon name="team" size={32} />
+              <h2>团队任务</h2>
+              <button className="btn" onClick={startCreate}>
+                新建工作区
               </button>
             </div>
-            <pre>{output || "正在执行，实时状态显示在当前楼层。"}</pre>
-          </div>
-        )}
-      </footer>
+          )}
+        </div>
+      </aside>
+      {/* ==================== CREATE WORKSPACE DIALOG ==================== */}
       <dialog
         ref={createDialog}
         className="create-dialog"
+        aria-labelledby="create-workspace-title"
         onCancel={(e) => {
           if (creating) e.preventDefault();
           else setShowCreate(false);
@@ -689,20 +910,19 @@ export function App() {
         <form onSubmit={createRoom}>
           <header>
             <span className="dialog-icon">
-              <Icon name="building" size={24} />
+              <Icon name="building" size={22} />
             </span>
             <button
               type="button"
-              className="icon-button"
+              className="btn-icon"
               aria-label="关闭新建工作区"
               disabled={creating}
               onClick={() => setShowCreate(false)}
             >
-              <Icon name="close" />
+              <Icon name="close" size={16} />
             </button>
           </header>
-          <h2>为你的团队，添一层新空间</h2>
-          <p>每个工作区都有独立的目录、成员和能力配置。</p>
+          <h2 id="create-workspace-title">新建工作区</h2>
           <label>
             工作区名称
             <input
@@ -712,22 +932,20 @@ export function App() {
               maxLength={60}
               value={roomName}
               onChange={(e) => setRoomName(e.target.value)}
-              placeholder="例如：内容工作室"
             />
           </label>
           <label>
-            本地文件夹路径
+            文件夹绝对路径
             <input
               className="field-input"
               required
               value={folderPath}
               onChange={(e) => setFolderPath(e.target.value)}
-              placeholder="例如：E:\workspaces\content"
             />
           </label>
           <div className="form-columns">
             <label>
-              主 Agent 引擎
+              主管执行引擎
               <select
                 className="field-input"
                 value={provider}
@@ -738,7 +956,7 @@ export function App() {
               </select>
             </label>
             <label>
-              房间氛围
+              主题
               <select
                 className="field-input"
                 value={theme}
@@ -752,21 +970,18 @@ export function App() {
               </select>
             </label>
           </div>
-          <div className="floor-notice">
-            <Icon name="layers" size={17} />
-            创建后将在楼顶新增 {rooms.length + 1}F
-          </div>
           {error && (
             <p className="form-error" role="alert">
               {error}
             </p>
           )}
           <button
+            type="submit"
             className="btn btn-primary full-width"
             disabled={creating || !roomName.trim() || !folderPath.trim()}
           >
-            <Icon name="plus" size={17} />
-            {creating ? "正在创建工作区…" : "创建并新增楼层"}
+            <Icon name="plus" size={16} />
+            {creating ? "创建中…" : "创建工作区"}
           </button>
         </form>
       </dialog>

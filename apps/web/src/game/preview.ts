@@ -3,11 +3,11 @@ import { CHARACTER_PRESETS, type RoomConfig } from "@agent-office/shared";
 /** Explicit, read-only showcase. Never written to the server or the live event store. */
 export const PREVIEW_ROOMS: RoomConfig[] = [
   { name: "主控大厅", roles: ["lead", "pm"] },
-  { name: "调研资料室", roles: ["researcher", "analyst", "docs"] },
-  { name: "研发工作室", roles: ["developer", "reviewer", "writer"] },
+  { name: "调研资料室", roles: ["lead", "researcher", "analyst", "docs"] },
+  { name: "研发工作室", roles: ["lead", "developer", "reviewer", "writer"] },
   {
     name: "内容工作室",
-    roles: ["editor", "designer", "voice", "ops", "community"],
+    roles: ["lead", "writer", "designer", "editor", "ops"],
   },
 ].map(({ name, roles }, i) => ({
   id: `preview-${i}`,
@@ -24,7 +24,7 @@ export const PREVIEW_ROOMS: RoomConfig[] = [
     const p = CHARACTER_PRESETS.find((p) => p.id === id)!;
     return {
       id,
-      name: p.label,
+      name: index === 0 ? (i === 3 ? "林主管" : `${name}主管`) : p.label,
       title: p.defaultTitle,
       provider: "codex",
       roleType: index === 0 ? "lead" : "worker",

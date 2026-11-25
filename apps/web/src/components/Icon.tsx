@@ -12,8 +12,20 @@ export type IconName =
   | "check"
   | "clock"
   | "arrow"
+  | "chevron-left"
+  | "chevron-right"
+  | "panel-left"
+  | "panel-right"
+  | "bolt"
+  | "branch"
+  | "terminal"
+  | "search"
+  | "refresh"
+  | "trash"
+  | "shield"
   | "settings"
   | "play";
+
 const paths: Record<IconName, string> = {
   building: "M4 21V7l8-4 8 4v14M2 21h20M9 21v-5h6v5M8 8h1m6 0h1M8 12h1m6 0h1",
   layers: "m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5",
@@ -28,10 +40,22 @@ const paths: Record<IconName, string> = {
   check: "m5 12 4 4L19 6",
   clock: "M12 8v5l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z",
   arrow: "m9 5 7 7-7 7",
+  "chevron-left": "m15 18-6-6 6-6",
+  "chevron-right": "m9 18 6-6-6-6",
+  "panel-left": "M3 4h18v16H3V4Zm6 0v16",
+  "panel-right": "M3 4h18v16H3V4Zm12 0v16",
+  bolt: "M13 2 4 14h7l-1 8 9-12h-7l1-8Z",
+  branch: "M6 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3-3h6a3 3 0 0 0 3-3V6m0 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  terminal: "m4 17 6-5-6-5m8 10h8",
+  search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-4.3-4.3",
+  refresh: "M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5",
+  trash: "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z",
   settings: "M4 7h16M4 17h16M8 4v6m8 4v6",
   play: "m8 4 12 8-12 8V4Z",
 };
-export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
+
+export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return (
     <svg
       width={size}
@@ -39,7 +63,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.7"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

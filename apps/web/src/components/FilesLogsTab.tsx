@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
-import type { OfficeEvent, RoomConfig } from "@agent-office/shared";
+import { useCallback, useEffect, useState } from "react";
+import type {
+  OfficeEvent,
+  RoomConfig,
+  TaskLogRecallResult,
+  TaskRecord,
+  TaskStatus,
+} from "@agent-office/shared";
 import { api, type FileEntry } from "../api/client";
+import { Icon } from "./Icon";
 
 interface Props {
   room: RoomConfig;
@@ -8,6 +15,16 @@ interface Props {
   onRefreshRoom: () => Promise<void>;
   onRemoveRoom: (roomId: string) => Promise<void>;
 }
+
+const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  queued: "排队中",
+  running: "执行中",
+  waiting_approval: "待确认",
+  completed: "已完成",
+  failed: "失败",
+  stalled: "执行受阻",
+  cancelled: "已停止",
+};
 
 export function FilesLogsTab({
   room,
@@ -17,10 +34,19 @@ export function FilesLogsTab({
 }: Props) {
   const [subPath, setSubPath] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [logSearch, setLogSearch] = useState("");
+  const [recalledLog, setRecalledLog] = useState<TaskLogRecallResult | null>(
+    null,
+  );
+  const [loadingLog, setLoadingLog] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     setSubPath("");
+    setSelectedTaskId(null);
+    setRecalledLog(null);
   }, [room.id]);
 
   useEffect(() => {
@@ -33,6 +59,40 @@ export function FilesLogsTab({
       );
   }, [room.id, subPath]);
 
+  const loadTasks = useCallback(() => {
+    api
+      .listTasks(room.id, 25)
+      .then(setTasks)
+      .catch(() => {
+        /* Ignore background refresh errors */
+      });
+  }, [room.id]);
+
+  useEffect(() => {
+    loadTasks();
+  }, [loadTasks, events.length]);
+
+  const handleRecallLog = async (taskId: string, grep?: string) => {
+    setSelectedTaskId(taskId);
+    setLoadingLog(true);
+    try {
+      const res = await api.recallTaskLog(room.id, taskId, {
+        limit: 120,
+        grep: grep?.trim() || undefined,
+      });
+      setRecalledLog(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingLog(false);
+    }
+  };
+
+  const handleCleanupWorktree = async (taskId: string) => {
+    await api.cleanupWorktree(room.id, taskId);
+    loadTasks();
+  };
+
   const roomEvents = events.filter((e) => e.roomId === room.id);
 
   function goUp() {
@@ -41,178 +101,241 @@ export function FilesLogsTab({
     setSubPath(parts.join("/"));
   }
 
+  function statusBadgeClass(status: TaskStatus): string {
+    if (status === "completed") return "badge-emerald";
+    if (status === "running" || status === "queued") return "badge-violet";
+    if (status === "waiting_approval") return "badge-amber";
+    if (status === "stalled" || status === "failed") return "badge-danger";
+    return "badge-neutral";
+  }
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div
-        style={{
-          padding: 10,
-          borderRadius: 8,
-          background: "var(--bg-card)",
-          border: "1px solid var(--border-subtle)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <strong style={{ fontSize: 12 }}>房间设置</strong>
-          <button
-            onClick={() => onRemoveRoom(room.id)}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--danger)",
-              fontSize: 11,
-              cursor: "pointer",
-            }}
-          >
-            从办公室移除
+    <>
+      {/* Super-Agent Task Queue & Chain of Recall */}
+      <section className="detail-section">
+        <div className="section-header">
+          <h3>
+            <Icon name="terminal" size={16} />
+            任务 ({tasks.length})
+          </h3>
+          <button type="button" className="btn btn-sm" onClick={loadTasks}>
+            <Icon name="refresh" size={13} />
+            刷新
           </button>
         </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontSize: 12,
-          }}
-        >
-          <span style={{ color: "var(--text-muted)" }}>2D 房间主题:</span>
-          <select
-            value={room.theme}
-            onChange={(e) =>
-              api
-                .updateRoom(room.id, {
-                  theme: e.target.value as RoomConfig["theme"],
-                })
-                .then(onRefreshRoom)
-            }
-            style={{
-              padding: "4px 8px",
-              borderRadius: 6,
-              border: "1px solid var(--border-strong)",
-              background: "var(--bg-input)",
-              color: "var(--text-main)",
-              fontSize: 12,
-            }}
-          >
-            <option value="modern">暖木办公室</option>
-            <option value="retro">复古资料室</option>
-            <option value="studio">创意工作室</option>
-          </select>
-        </div>
-      </div>
 
-      <div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 6,
-          }}
-        >
-          <strong style={{ fontSize: 12 }}>
-            目录文件 {subPath ? `/${subPath}` : "/"}
-          </strong>
-          {subPath && (
-            <button
-              onClick={goUp}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--border-strong)",
-                borderRadius: 4,
-                color: "var(--text-muted)",
-                fontSize: 11,
-                padding: "2px 6px",
-                cursor: "pointer",
-              }}
+        <div className="task-list">
+          {tasks.length === 0 && <p className="muted">暂无任务</p>}
+          {tasks.map((t) => (
+            <div
+              key={t.id}
+              className={`task-item-card ${selectedTaskId === t.id ? "selected" : ""}`}
             >
+              <div className="task-item-top">
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <strong>{t.agentName}</strong>
+                </div>
+                <span className={`badge ${statusBadgeClass(t.status)}`}>
+                  {TASK_STATUS_LABELS[t.status]}
+                </span>
+              </div>
+
+              <div className="task-prompt-line" title={t.prompt}>
+                {t.prompt}
+              </div>
+
+              {t.worktreeBranch && (
+                <div className="task-item-top">
+                  <span className="badge badge-violet">
+                    <Icon name="branch" size={11} />
+                    {t.worktreeBranch}
+                  </span>
+                  {t.status !== "running" && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => handleCleanupWorktree(t.id)}
+                    >
+                      清理分支目录
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {(t.summary || t.error) && (
+                <div
+                  className={`task-summary-snippet ${t.error ? "is-error" : ""}`}
+                >
+                  {t.error ? `异常: ${t.error}` : t.summary}
+                </div>
+              )}
+
+              <div className="task-item-top">
+                <small className="muted">
+                  {new Date(t.createdAt).toLocaleTimeString("zh-CN")}
+                </small>
+                {t.logPath && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => handleRecallLog(t.id, logSearch)}
+                  >
+                    <Icon name="search" size={12} />
+                    查看日志
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {selectedTaskId && (
+          <div className="panel-card">
+            <div className="task-item-top">
+              <strong>日志 ({selectedTaskId.slice(0, 8)})</strong>
+              <button
+                type="button"
+                className="btn-icon"
+                aria-label="关闭任务日志"
+                onClick={() => {
+                  setSelectedTaskId(null);
+                  setRecalledLog(null);
+                }}
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                className="field-input"
+                aria-label="日志关键词"
+                placeholder="搜索日志"
+                value={logSearch}
+                onChange={(e) => setLogSearch(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => handleRecallLog(selectedTaskId, logSearch)}
+              >
+                检索
+              </button>
+            </div>
+            <pre className="code-log-box">
+              {loadingLog
+                ? "读取中…"
+                : recalledLog
+                  ? `# 共 ${recalledLog.totalLines} 行，命中 ${recalledLog.matchedLines} 行\n` +
+                    (recalledLog.lines.join("\n") || "(无匹配行)")
+                  : ""}
+            </pre>
+          </div>
+        )}
+      </section>
+
+      {/* Workspace File Browser */}
+      <section className="detail-section">
+        <div className="section-header">
+          <h3>
+            <Icon name="folder" size={16} />
+            工作区文件 {subPath ? `/${subPath}` : "/"}
+          </h3>
+          {subPath && (
+            <button type="button" className="btn btn-sm" onClick={goUp}>
               返回上级
             </button>
           )}
         </div>
         {error && (
-          <div style={{ color: "var(--danger)", fontSize: 11 }}>{error}</div>
+          <p className="form-error" role="alert">
+            {error}
+          </p>
         )}
-        <div
-          style={{
-            maxHeight: 170,
-            overflowY: "auto",
-            background: "var(--bg-card)",
-            borderRadius: 8,
-            border: "1px solid var(--border-subtle)",
-            padding: 6,
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-          }}
-        >
-          {files.length === 0 && (
-            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
-              空目录
-            </span>
-          )}
-          {files.map((f) => (
-            <div
-              key={f.path}
-              onClick={() => f.type === "dir" && setSubPath(f.path)}
-              style={{
-                fontSize: 12,
-                padding: "4px 6px",
-                borderRadius: 4,
-                cursor: f.type === "dir" ? "pointer" : "default",
-                color: f.type === "dir" ? "var(--accent)" : "var(--text-main)",
-              }}
-            >
-              {f.type === "dir" ? "📁 " : "📄 "}
-              {f.name}
-            </div>
-          ))}
+        <div className="file-browser-box">
+          {files.length === 0 && <span className="muted">当前目录为空</span>}
+          {files.map((f) => {
+            const content = (
+              <>
+                <Icon name={f.type === "dir" ? "folder" : "file"} size={14} />
+                <span>{f.name}</span>
+              </>
+            );
+            return f.type === "dir" ? (
+              <button
+                key={f.path}
+                type="button"
+                className="file-entry-row is-dir"
+                onClick={() => setSubPath(f.path)}
+              >
+                {content}
+              </button>
+            ) : (
+              <div key={f.path} className="file-entry-row">
+                {content}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      </section>
 
-      <div>
-        <strong style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
-          本房间实时事件（{roomEvents.length}）
-        </strong>
-        <div
-          style={{
-            maxHeight: 160,
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-          }}
-        >
-          {roomEvents.length === 0 && (
-            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
-              暂无运行事件
-            </span>
-          )}
+      {/* Live Event Stream & Room Settings */}
+      <section className="detail-section">
+        <div className="section-header">
+          <h3>
+            <Icon name="clock" size={16} />
+            动态 ({roomEvents.length})
+          </h3>
+        </div>
+        <div className="task-list" style={{ maxHeight: 130 }}>
+          {roomEvents.length === 0 && <p className="muted">暂无动态</p>}
           {roomEvents.map((ev) => (
-            <div
-              key={ev.id}
-              style={{
-                padding: 6,
-                borderRadius: 6,
-                background: "var(--bg-card)",
-                fontSize: 11,
-                color: "var(--text-muted)",
-              }}
-            >
-              <strong>[{ev.provider}]</strong> {ev.status} —{" "}
-              {ev.bubbleText ?? ""}
+            <div key={ev.id} className="task-item-card">
+              <div className="task-item-top">
+                <span className="badge badge-neutral">{ev.provider}</span>
+                <small className="muted">{ev.status}</small>
+              </div>
+              <div className="task-prompt-line">{ev.bubbleText ?? ""}</div>
             </div>
           ))}
         </div>
-      </div>
-    </div>
+      </section>
+
+      <section className="detail-section">
+        <div className="panel-card">
+          <div className="section-header">
+            <h3>
+              <Icon name="settings" size={15} />
+              工作区设置
+            </h3>
+            <button
+              type="button"
+              className="btn btn-sm btn-danger-ghost"
+              onClick={() => onRemoveRoom(room.id)}
+            >
+              <Icon name="trash" size={13} />
+              移除楼层
+            </button>
+          </div>
+          <label className="field-label">
+            主题
+            <select
+              className="field-input"
+              value={room.theme}
+              onChange={(e) =>
+                api
+                  .updateRoom(room.id, {
+                    theme: e.target.value as RoomConfig["theme"],
+                  })
+                  .then(onRefreshRoom)
+              }
+            >
+              <option value="modern">暖木办公室</option>
+              <option value="retro">复古资料室</option>
+              <option value="studio">创意工作室</option>
+            </select>
+          </label>
+        </div>
+      </section>
+    </>
   );
 }

@@ -7,6 +7,7 @@ import {
 } from "@agent-office/shared";
 import { api } from "../api/client";
 import { Character } from "./Character";
+import { Icon } from "./Icon";
 import { resolveSpriteKey } from "../game/pixelSprites";
 
 interface Props {
@@ -14,6 +15,7 @@ interface Props {
   selectedAgentId: string | null;
   onSelectAgent: (agentId: string | null) => void;
   onRefreshRoom: () => Promise<void>;
+  onConfigure: () => void;
 }
 
 function CharacterPicker({
@@ -24,39 +26,20 @@ function CharacterPicker({
   onChange: (presetId: string) => void;
 }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr)",
-        gap: 6,
-      }}
-    >
+    <div className="character-picker">
       {CHARACTER_PRESETS.map((preset) => {
         const active = value === preset.id;
         return (
           <button
             key={preset.id}
             type="button"
+            className={`character-choice ${active ? "active" : ""}`}
             onClick={() => onChange(preset.id)}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 3,
-              padding: "6px 4px",
-              borderRadius: 6,
-              border: active
-                ? "2px solid var(--accent)"
-                : "1px solid var(--border-subtle)",
-              background: active ? "#e6efe4" : "var(--bg-input)",
-              color: active ? "var(--text-main)" : "var(--text-muted)",
-              cursor: "pointer",
-            }}
+            aria-pressed={active}
+            aria-label={preset.label}
           >
-            <Character id={preset.id} label={preset.label} size={48} />
-            <span style={{ fontSize: 10, whiteSpace: "nowrap" }}>
-              {preset.label}
-            </span>
+            <Character id={preset.id} label={preset.label} size={46} />
+            <span>{preset.label}</span>
           </button>
         );
       })}
@@ -69,6 +52,7 @@ export function AgentsTab({
   selectedAgentId,
   onSelectAgent,
   onRefreshRoom,
+  onConfigure,
 }: Props) {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
@@ -79,6 +63,8 @@ export function AgentsTab({
 
   const [showSkinPicker, setShowSkinPicker] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [mandate, setMandate] = useState("");
+  const [isolateWorktree, setIsolateWorktree] = useState(true);
   const [running, setRunning] = useState(false);
   const [lastOutput, setLastOutput] = useState<string>("");
 
@@ -111,10 +97,19 @@ export function AgentsTab({
     setRunning(true);
     setLastOutput("");
     try {
-      const res = await api.runAgent(room.id, activeAgent.id, prompt.trim());
-      setLastOutput(
-        res.success ? res.output || "(执行完成)" : `错误: ${res.error}`,
-      );
+      const isWorker = activeAgent.roleType === "worker";
+      const res = await api.dispatchTask(room.id, activeAgent.id, {
+        prompt: prompt.trim(),
+        routeMode: isWorker ? "pass_through" : "router",
+        mandate: mandate.trim() || undefined,
+        isolateWorktree: isWorker ? isolateWorktree : false,
+        async: true,
+      });
+      setPrompt("");
+      const wtInfo = res.task.worktreeBranch
+        ? `\n隔离分支: ${res.task.worktreeBranch}`
+        : "";
+      setLastOutput(`已提交\n任务: ${res.task.id}${wtInfo}`);
     } catch (err) {
       setLastOutput(
         `请求失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -122,22 +117,6 @@ export function AgentsTab({
     } finally {
       setRunning(false);
     }
-  }
-
-  async function toggleAgentSkill(agent: AgentProfile, skillId: string) {
-    const next = agent.skills.includes(skillId)
-      ? agent.skills.filter((s) => s !== skillId)
-      : [...agent.skills, skillId];
-    await api.updateAgent(room.id, agent.id, { skills: next });
-    await onRefreshRoom();
-  }
-
-  async function toggleAgentMcp(agent: AgentProfile, serverName: string) {
-    const next = agent.mcpServers.includes(serverName)
-      ? agent.mcpServers.filter((m) => m !== serverName)
-      : [...agent.mcpServers, serverName];
-    await api.updateAgent(room.id, agent.id, { mcpServers: next });
-    await onRefreshRoom();
   }
 
   async function handleSwitchProvider(
@@ -161,30 +140,26 @@ export function AgentsTab({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          房间成员（{room.agents.length}）
-        </span>
+    <>
+      <div className="section-header">
+        <h3>
+          <Icon name="team" size={16} />
+          成员 ({room.agents.length})
+        </h3>
         <button
-          className="btn btn-primary"
+          type="button"
+          className={`btn btn-sm ${showAdd ? "" : "btn-primary"}`}
           onClick={() => setShowAdd(!showAdd)}
+          aria-expanded={showAdd}
         >
-          {showAdd ? "取消" : "+ 招聘子 Agent"}
+          <Icon name={showAdd ? "close" : "plus"} size={14} />
+          {showAdd ? "取消" : "添加专员"}
         </button>
       </div>
 
       {showAdd && (
-        <form onSubmit={handleAddAgent} className="pixel-card">
-          <strong style={{ fontSize: 12 }}>
-            选择人物形象（13 款职业皮肤）
-          </strong>
+        <form onSubmit={handleAddAgent} className="panel-card">
+          <span className="field-label">形象</span>
           <CharacterPicker
             value={sprite}
             onChange={(id) => {
@@ -196,40 +171,52 @@ export function AgentsTab({
                 setTitle(p.defaultTitle);
             }}
           />
-          <input
-            className="field-input"
-            placeholder="名称（如：剪辑师 / 开发者）"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            className="field-input"
-            placeholder="职位（如：Video Editor / Developer）"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <select
-            className="field-input"
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as CliProvider)}
-          >
-            <option value="antigravity">Antigravity CLI (agy)</option>
-            <option value="codex">Codex CLI (codex)</option>
-          </select>
-          <textarea
-            className="field-input"
-            rows={2}
-            placeholder="职责说明（System Instructions）"
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-          />
-          <button type="submit" className="btn btn-primary">
-            确认加入房间
+          <div className="form-columns">
+            <label className="field-label">
+              姓名
+              <input
+                className="field-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <label className="field-label">
+              职位
+              <input
+                className="field-input"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </label>
+          </div>
+          <label className="field-label">
+            执行引擎
+            <select
+              className="field-input"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value as CliProvider)}
+            >
+              <option value="codex">Codex CLI</option>
+              <option value="antigravity">Antigravity CLI</option>
+            </select>
+          </label>
+          <label className="field-label">
+            职责
+            <textarea
+              className="field-input"
+              rows={2}
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+            />
+          </label>
+          <button type="submit" className="btn btn-emerald full-width">
+            <Icon name="check" size={15} />
+            添加专员
           </button>
         </form>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div className="member-list">
         {room.agents.map((agent) => {
           const isSelected = activeAgent?.id === agent.id;
           const spriteKey = resolveSpriteKey(
@@ -238,94 +225,49 @@ export function AgentsTab({
             agent.provider,
           );
           return (
-            <div
+            <button
               key={agent.id}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onSelectAgent(agent.id);
-                }
-              }}
+              type="button"
+              className={`member-row ${isSelected ? "selected" : ""}`}
               onClick={() => onSelectAgent(agent.id)}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 8,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                background: isSelected ? "var(--bg-card)" : "var(--bg-input)",
-                border: isSelected
-                  ? "1px solid var(--accent)"
-                  : "1px solid var(--border-subtle)",
-              }}
+              aria-pressed={isSelected}
+              aria-label={`${agent.name} · ${agent.roleType === "lead" ? "主管" : "专员"}`}
             >
-              <Character id={spriteKey} label={agent.name} size={44} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>
-                    {agent.roleType === "lead" ? "★ " : ""}
-                    {agent.name}
-                  </span>
-                  <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                    {agent.provider}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "var(--text-muted)",
-                    marginTop: 2,
-                  }}
-                >
-                  {agent.title}
-                </div>
-              </div>
-            </div>
+              <Character id={spriteKey} label={agent.name} size={42} />
+              <span className="member-row-info">
+                <strong>
+                  {agent.name}
+                  {agent.roleType === "lead" && (
+                    <span className="badge badge-neutral">主管</span>
+                  )}
+                </strong>
+                <small>{agent.title}</small>
+              </span>
+            </button>
           );
         })}
       </div>
 
       {activeAgent && (
-        <div className="pixel-card">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <strong style={{ fontSize: 13 }}>
-              {activeAgent.name} 配置与指令
-            </strong>
-            <div style={{ display: "flex", gap: 8 }}>
+        <div className="panel-card panel-card-white">
+          <div className="section-header">
+            <h3>{activeAgent.name}</h3>
+            <div style={{ display: "flex", gap: 6 }}>
               <button
                 type="button"
-                className="btn"
-                style={{ padding: "2px 8px", fontSize: 11 }}
+                className="btn btn-sm"
                 onClick={() => setShowSkinPicker(!showSkinPicker)}
+                aria-expanded={showSkinPicker}
               >
-                {showSkinPicker ? "收起形象" : "换人物形象"}
+                {showSkinPicker ? "收起" : "形象"}
               </button>
               {activeAgent.roleType !== "lead" && (
                 <button
+                  type="button"
+                  className="btn btn-sm btn-danger-ghost"
                   onClick={() => handleDeleteAgent(activeAgent.id)}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "var(--danger)",
-                    fontSize: 11,
-                    cursor: "pointer",
-                  }}
                 >
+                  <Icon name="trash" size={13} />
                   移除
                 </button>
               )}
@@ -343,17 +285,8 @@ export function AgentsTab({
             />
           )}
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 12,
-            }}
-          >
-            <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-              CLI 引擎:
-            </span>
+          <label className="field-label">
+            执行引擎
             <select
               className="field-input"
               value={activeAgent.provider}
@@ -361,145 +294,85 @@ export function AgentsTab({
                 handleSwitchProvider(activeAgent, e.target.value as CliProvider)
               }
             >
-              <option value="antigravity">Antigravity CLI (agy)</option>
-              <option value="codex">Codex CLI (codex)</option>
+              <option value="codex">Codex CLI</option>
+              <option value="antigravity">Antigravity CLI</option>
             </select>
-          </div>
+          </label>
 
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--text-muted)",
-              lineHeight: 1.4,
-            }}
-          >
-            职责：{activeAgent.instructions}
-          </div>
-
-          {room.skills.length > 0 && (
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  marginBottom: 4,
-                }}
-              >
-                分配 Skills：
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {room.skills.map((s) => (
-                  <label
-                    key={s.id}
-                    style={{
-                      fontSize: 11,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={activeAgent.skills.includes(s.id)}
-                      onChange={() => toggleAgentSkill(activeAgent, s.id)}
-                    />
-                    {s.id}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {room.mcpServers.length > 0 && (
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  marginBottom: 4,
-                }}
-              >
-                分配 MCP：
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {room.mcpServers.map((m) => (
-                  <label
-                    key={m.name}
-                    style={{
-                      fontSize: 11,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={activeAgent.mcpServers.includes(m.name)}
-                      onChange={() => toggleAgentMcp(activeAgent, m.name)}
-                    />
-                    {m.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
+          <p className="muted">{activeAgent.instructions}</p>
+          <button className="btn btn-emerald full-width" onClick={onConfigure}>
+            <Icon name="settings" size={16} />
+            配置职责、Skills 与 MCP
+          </button>
 
           <form
             onSubmit={handleRun}
-            style={{ display: "flex", flexDirection: "column", gap: 6 }}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              paddingTop: 6,
+              borderTop: "1px solid var(--border-subtle)",
+            }}
           >
             <textarea
               className="field-input"
               rows={2}
-              placeholder={`给 ${activeAgent.name} 下达任务...`}
+              aria-label={`给 ${activeAgent.name} 的任务`}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />
+            <details className="member-task-options">
+              <summary>任务选项</summary>
+              <label className="field-label">
+                权限范围（可选）
+                <input
+                  className="field-input"
+                  value={mandate}
+                  onChange={(e) => setMandate(e.target.value)}
+                />
+              </label>
+              {activeAgent.roleType === "worker" && (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={isolateWorktree}
+                    onChange={(e) => setIsolateWorktree(e.target.checked)}
+                  />
+                  <span>独立 Git 工作区</span>
+                </label>
+              )}
+            </details>
             <div style={{ display: "flex", gap: 6 }}>
               <button
                 type="submit"
-                disabled={running}
-                className="btn btn-primary"
+                disabled={running || !prompt.trim()}
+                className={`btn ${activeAgent.roleType === "worker" ? "btn-emerald" : "btn-primary"}`}
                 style={{ flex: 1 }}
               >
-                {running ? "执行中..." : "▶ 派发任务"}
+                <Icon
+                  name={activeAgent.roleType === "worker" ? "bolt" : "send"}
+                  size={14}
+                />
+                {running
+                  ? "提交中..."
+                  : activeAgent.roleType === "worker"
+                    ? "发送"
+                    : "交给主管"}
               </button>
-              {running && (
-                <button
-                  type="button"
-                  onClick={() => api.stopAgent(room.id, activeAgent.id)}
-                  className="btn"
-                  style={{
-                    background: "#ef4444",
-                    borderColor: "#ef4444",
-                    color: "#fff",
-                  }}
-                >
-                  停止
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => api.stopAgent(room.id, activeAgent.id)}
+                className="btn btn-danger-ghost"
+              >
+                停止
+              </button>
             </div>
           </form>
 
-          {lastOutput && (
-            <pre
-              style={{
-                margin: 0,
-                padding: 8,
-                borderRadius: 6,
-                background: "var(--bg-card)",
-                color: "var(--text-main)",
-                fontSize: 11,
-                maxHeight: 160,
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {lastOutput}
-            </pre>
-          )}
+          {lastOutput && <pre className="code-log-box">{lastOutput}</pre>}
         </div>
       )}
-    </div>
+    </>
   );
 }
