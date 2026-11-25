@@ -1,28 +1,82 @@
 import { Injectable } from '@nestjs/common';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { RoomConfig } from '@agent-office/shared';
+import { join, resolve } from 'node:path';
+import type { McpServerConfig, RoomConfig } from '@agent-office/shared';
+
+const ORCHESTRATOR_SERVER_NAME = 'agent-office-orchestrator';
 
 /**
  * Compiles the canonical `.agent-office/room.json` configuration into
  * provider-specific files understood by Antigravity CLI (.agents/)
- * and Codex CLI (AGENTS.md / .codex/config.toml).
+ * and Codex CLI (AGENTS.md / .codex/config.toml), including automatic
+ * injection of the built-in Super-Agent Orchestrator MCP server.
  */
 @Injectable()
 export class ConfigSyncService {
+  private readonly orchestratorEntryScript = resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    '..',
+    'packages',
+    'orchestrator-mcp',
+    'dist',
+    'index.js',
+  );
+
   async syncRoom(room: RoomConfig): Promise<void> {
+    await this.syncRoomToDir(room, room.folderPath, false);
+  }
+
+  async syncRoomToDir(
+    room: RoomConfig,
+    targetDir: string,
+    isWorkerWorktree = targetDir !== room.folderPath,
+  ): Promise<void> {
     await Promise.all([
-      this.syncAntigravityConfig(room),
-      this.syncCodexConfig(room),
+      this.syncAntigravityConfig(room, targetDir, isWorkerWorktree),
+      this.syncCodexConfig(room, targetDir, isWorkerWorktree),
     ]);
   }
 
-  private async syncAntigravityConfig(room: RoomConfig): Promise<void> {
-    const agentsDir = join(room.folderPath, '.agents');
+  private buildEffectiveMcpServers(
+    room: RoomConfig,
+    isWorkerWorktree: boolean,
+  ): McpServerConfig[] {
+    const serverUrl =
+      process.env.AGENT_OFFICE_SERVER_URL ??
+      `http://127.0.0.1:${process.env.PORT ?? 3001}`;
+
+    const builtInOrchestrator: McpServerConfig = {
+      name: ORCHESTRATOR_SERVER_NAME,
+      transport: 'stdio',
+      command: process.execPath,
+      args: [this.orchestratorEntryScript],
+      env: {
+        AGENT_OFFICE_SERVER_URL: serverUrl,
+        AGENT_OFFICE_ROOM_ID: room.id,
+        AGENT_OFFICE_ROLE: isWorkerWorktree ? 'worker' : 'lead',
+      },
+      enabled: true,
+    };
+
+    const userServers = room.mcpServers.filter(
+      (s) => s.enabled && s.name !== ORCHESTRATOR_SERVER_NAME,
+    );
+    return [builtInOrchestrator, ...userServers];
+  }
+
+  private async syncAntigravityConfig(
+    room: RoomConfig,
+    targetDir: string,
+    isWorkerWorktree: boolean,
+  ): Promise<void> {
+    const agentsDir = join(targetDir, '.agents');
     await mkdir(agentsDir, { recursive: true });
 
     const mcpServers: Record<string, unknown> = {};
-    for (const srv of room.mcpServers.filter((s) => s.enabled)) {
+    for (const srv of this.buildEffectiveMcpServers(room, isWorkerWorktree)) {
       mcpServers[srv.name] =
         srv.transport === 'stdio'
           ? { command: srv.command, args: srv.args ?? [], env: srv.env ?? {} }
@@ -36,21 +90,31 @@ export class ConfigSyncService {
     );
   }
 
-  private async syncCodexConfig(room: RoomConfig): Promise<void> {
+  private async syncCodexConfig(
+    room: RoomConfig,
+    targetDir: string,
+    isWorkerWorktree: boolean,
+  ): Promise<void> {
     const lead = room.agents.find((a) => a.id === room.leadAgentId);
     const workers = room.agents.filter((a) => a.id !== room.leadAgentId);
-
     const enabledSkills = room.skills.filter((s) => s.enabled);
 
     const agentsMd = [
       `# ${room.name}`,
       '',
-      room.description ?? 'Managed by Agent Office.',
+      room.description || 'Managed by Agent Office (Super-Agent Architecture).',
       '',
-      '## Lead Agent',
-      lead ? `- **${lead.name}** (${lead.title}): ${lead.instructions}` : '- None',
+      '## Super-Agent Collaboration Protocol',
+      '- **Thin Router (Lead Agent)**: 负责全局意图拆解、权限边界（Mandate）设定与验收汇总；通过 `delegate_task` 异步并行派发子任务（默认非阻塞返回 `taskId`），禁止单线程阻塞包揽所有重活。',
+      '- **Inline & Spill Context**: 子任务完成后通过 `check_task_status` 获取精简 Inline 摘要；仅在需要排查细节时调用 `recall_task_log` 按行或关键词召回 `.agent-office/runs/<taskId>.log`。',
+      '- **Mandate & Human Approval**: 遇到高危变更或模糊决策，调用 `ask_user` 在 2D 办公楼发起人工确认气泡。',
       '',
-      '## Sub-Agents',
+      '## Lead Agent (Router)',
+      lead
+        ? `- **${lead.name}** (\`${lead.id}\`, ${lead.title}): ${lead.instructions}`
+        : '- None',
+      '',
+      '## Worker Agents (Isolated Pool)',
       ...(workers.length > 0
         ? workers.map(
             (w) =>
@@ -67,21 +131,28 @@ export class ConfigSyncService {
       '',
     ].join('\n');
 
-    await writeFile(join(room.folderPath, 'AGENTS.md'), agentsMd, 'utf-8');
+    await writeFile(join(targetDir, 'AGENTS.md'), agentsMd, 'utf-8');
 
-    // Sync .codex/config.toml for MCP servers
-    const codexDir = join(room.folderPath, '.codex');
+    const codexDir = join(targetDir, '.codex');
     await mkdir(codexDir, { recursive: true });
     const tomlLines: string[] = [
       '# Auto-generated by Agent Office ConfigSyncService',
       '',
     ];
-    for (const srv of room.mcpServers.filter((s) => s.enabled)) {
-      tomlLines.push(`[mcp_servers.${srv.name.replace(/[^a-zA-Z0-9_-]/g, '_')}]`);
+
+    for (const srv of this.buildEffectiveMcpServers(room, isWorkerWorktree)) {
+      const sectionKey = srv.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      tomlLines.push(`[mcp_servers.${sectionKey}]`);
       if (srv.transport === 'stdio' && srv.command) {
         tomlLines.push(`command = ${JSON.stringify(srv.command)}`);
         if (srv.args && srv.args.length > 0) {
           tomlLines.push(`args = ${JSON.stringify(srv.args)}`);
+        }
+        if (srv.env && Object.keys(srv.env).length > 0) {
+          tomlLines.push(`[mcp_servers.${sectionKey}.env]`);
+          for (const [k, v] of Object.entries(srv.env)) {
+            tomlLines.push(`${k} = ${JSON.stringify(v)}`);
+          }
         }
       } else if (srv.url) {
         tomlLines.push(`url = ${JSON.stringify(srv.url)}`);

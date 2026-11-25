@@ -12,7 +12,13 @@
 - **双 CLI 引擎统一适配**：
   - **Antigravity CLI (`agy`)**：通过 `agy --add-dir <dir> --output-format stream-json -p` 执行并实时消费 NDJSON 事件流，自动同步 `.agents/mcp_config.json`。
   - **Codex CLI (`codex`)**：通过 `codex exec --json`（后续平滑升级至 `codex app-server` JSON-RPC 2.0 持久会话）执行，自动同步 `AGENTS.md` / `.codex/`。
-- **跨 CLI 主从协作（Orchestrator MCP）**：内置 `@agent-office/orchestrator-mcp`，暴露 `list_room_agents`、`delegate_task`、`ask_user` 工具，支持主 Agent（如 `agy`）直接派发任务给房间内的子 Agent（如 `codex`）。
+- **跨 CLI 主从协作（Super-Agent Orchestrator MCP）**：内置 `@agent-office/orchestrator-mcp` 并由 `ConfigSyncService` 自动注入，支持 **Thin Router（轻量主管）+ Isolated Workers（隔离专员）** 双层拓扑：
+  - `delegate_task`：默认**非阻塞异步派发**（携带不可变 `Mandate` 边界约束），立即返回 `taskId` 支持多专员并行；
+  - `check_task_status` & `recall_task_log`：**Inline & Spill + Chain of Recall** 上下文机制，完整执行流溢写至 `.agent-office/runs/<taskId>.log`，主管仅消费精简摘要并按需检索日志行；
+  - `ask_user`：在 2D 办公楼发起真实人工审批流（暂停 Watchdog 超时计时，等待前端放行/驳回）。
+- **Git Worktree 并发物理隔离**：专员并发执行任务时自动分配独立 `.agent-office/worktrees/<agent>-<task>` 分支工作区（非 Git 目录自动平滑降级），根除同目录写冲突。
+- **订阅直通（Subscription Pass-Through）**：点击 2D 楼层中的专员可直接绕过主管下达追问指令，自动续接该专员持久会话（`sessionId`）与活跃 Worktree。
+- **SQLite 计算状态分离与 Watchdog 守护**：基于 Node 22 内置 `node:sqlite` 持久化房间注册表、任务队列、会话句柄与审批单，配合 `WatchdogService` 巡检子进程心跳并自动拦截静默死锁。
 - **实时 2D 办公表现层**：后端通过 WebSocket (`/ws/office`) 广播标准化 `OfficeEvent`，前端主界面基于 **React + Zustand + CSS** 渲染纵向办公楼、职业人物与状态气泡；旧 Phaser 场景保留在源码中。
 
 ---

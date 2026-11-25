@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -9,8 +10,13 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import type { McpServerConfig } from '@agent-office/shared';
+import type {
+  ApprovalStatus,
+  DispatchTaskRequest,
+  McpServerConfig,
+} from '@agent-office/shared';
 import { RuntimeService } from '../runtime/runtime.service';
+import { WorktreeService } from '../runtime/worktree.service';
 import {
   AddAgentDto,
   CreateRoomDto,
@@ -25,6 +31,7 @@ export class RoomsController {
   constructor(
     private readonly roomsService: RoomsService,
     private readonly runtimeService: RuntimeService,
+    private readonly worktreeService: WorktreeService,
   ) {}
 
   @Get('health')
@@ -88,21 +95,115 @@ export class RoomsController {
     return this.roomsService.removeAgent(roomId, agentId);
   }
 
+  /**
+   * Backward-compatible synchronous/optional-async run endpoint.
+   */
   @Post('rooms/:roomId/agents/:agentId/run')
-  runAgent(
+  async runAgent(
     @Param('roomId') roomId: string,
     @Param('agentId') agentId: string,
-    @Body() body: { prompt: string },
+    @Body()
+    body: {
+      prompt: string;
+      async?: boolean;
+      routeMode?: DispatchTaskRequest['routeMode'];
+      mandate?: string;
+      isolateWorktree?: boolean;
+      autoWakeLead?: boolean;
+      parentTaskId?: string;
+    },
   ) {
     const room = this.roomsService.getRoom(roomId);
     const agent = room.agents.find((a) => a.id === agentId);
     if (!agent) {
-      throw new NotFoundException(`Agent ${agentId} not found in room ${roomId}`);
+      throw new NotFoundException(
+        `Agent ${agentId} not found in room ${roomId}`,
+      );
     }
+    if (!body?.prompt?.trim()) {
+      throw new BadRequestException('prompt is required');
+    }
+
+    if (body.async) {
+      const { task } = await this.runtimeService.dispatchTask(room, agent, {
+        prompt: body.prompt,
+        routeMode: body.routeMode,
+        mandate: body.mandate,
+        isolateWorktree: body.isolateWorktree,
+        autoWakeLead: body.autoWakeLead,
+        parentTaskId: body.parentTaskId,
+        async: true,
+      });
+      return {
+        success: true,
+        output: `任务已异步派发 (taskId: ${task.id})`,
+        taskId: task.id,
+        logPath: task.logPath,
+        worktreePath: task.worktreePath,
+        worktreeBranch: task.worktreeBranch,
+        task,
+      };
+    }
+
     return this.runtimeService.runAgentTask({
       room,
       agent,
       prompt: body.prompt,
+      routeMode: body.routeMode,
+      mandate: body.mandate,
+    });
+  }
+
+  /**
+   * Super-Agent Non-Blocking Dispatch & Subscription Pass-Through endpoint.
+   */
+  @Post('rooms/:roomId/agents/:agentId/dispatch')
+  dispatchAgentTask(
+    @Param('roomId') roomId: string,
+    @Param('agentId') agentId: string,
+    @Body() body: DispatchTaskRequest,
+  ) {
+    const room = this.roomsService.getRoom(roomId);
+    const agent = room.agents.find((a) => a.id === agentId);
+    if (!agent) {
+      throw new NotFoundException(
+        `Agent ${agentId} not found in room ${roomId}`,
+      );
+    }
+    if (!body?.prompt?.trim()) {
+      throw new BadRequestException('prompt is required');
+    }
+    return this.runtimeService.dispatchTask(room, agent, {
+      ...body,
+      async: body.async ?? true,
+    });
+  }
+
+  /**
+   * Explicit Subscription Pass-Through Fast-Path: skips Lead Router and routes
+   * directly to the target Worker's persistent session & active worktree.
+   */
+  @Post('rooms/:roomId/agents/:agentId/pass-through')
+  passThroughToWorker(
+    @Param('roomId') roomId: string,
+    @Param('agentId') agentId: string,
+    @Body() body: { prompt: string; async?: boolean; isolateWorktree?: boolean },
+  ) {
+    const room = this.roomsService.getRoom(roomId);
+    const agent = room.agents.find((a) => a.id === agentId);
+    if (!agent) {
+      throw new NotFoundException(
+        `Agent ${agentId} not found in room ${roomId}`,
+      );
+    }
+    if (!body?.prompt?.trim()) {
+      throw new BadRequestException('prompt is required');
+    }
+    return this.runtimeService.dispatchTask(room, agent, {
+      prompt: body.prompt,
+      routeMode: 'pass_through',
+      isolateWorktree: body.isolateWorktree,
+      async: body.async ?? true,
     });
   }
 
@@ -110,15 +211,139 @@ export class RoomsController {
   async stopAgent(
     @Param('roomId') roomId: string,
     @Param('agentId') agentId: string,
+    @Body() body?: { taskId?: string },
   ) {
     const room = this.roomsService.getRoom(roomId);
     const agent = room.agents.find((a) => a.id === agentId);
     if (!agent) {
-      throw new NotFoundException(`Agent ${agentId} not found in room ${roomId}`);
+      throw new NotFoundException(
+        `Agent ${agentId} not found in room ${roomId}`,
+      );
     }
-    await this.runtimeService.stopAgentTask(agent.provider, roomId, agentId);
+    await this.runtimeService.stopAgentTask(
+      agent.provider,
+      roomId,
+      agentId,
+      body?.taskId,
+    );
     return { stopped: true };
   }
+
+  // -------------------- Tasks & Chain of Recall Endpoints --------------------
+
+  @Get('rooms/:roomId/tasks')
+  listTasks(
+    @Param('roomId') roomId: string,
+    @Query('limit') limit?: string,
+  ) {
+    this.roomsService.getRoom(roomId);
+    return this.runtimeService.listRoomTasks(
+      roomId,
+      limit ? Number(limit) : 50,
+    );
+  }
+
+  @Get('rooms/:roomId/tasks/:taskId')
+  getTask(
+    @Param('roomId') roomId: string,
+    @Param('taskId') taskId: string,
+  ) {
+    this.roomsService.getRoom(roomId);
+    return this.runtimeService.getTaskOrThrow(roomId, taskId);
+  }
+
+  @Get('rooms/:roomId/tasks/:taskId/log')
+  recallTaskLog(
+    @Param('roomId') roomId: string,
+    @Param('taskId') taskId: string,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
+    @Query('grep') grep?: string,
+  ) {
+    this.roomsService.getRoom(roomId);
+    return this.runtimeService.recallTaskLog(roomId, taskId, {
+      offsetLines: offset ? Number(offset) : undefined,
+      limitLines: limit ? Number(limit) : undefined,
+      grep,
+    });
+  }
+
+  @Delete('rooms/:roomId/tasks/:taskId/worktree')
+  async cleanupTaskWorktree(
+    @Param('roomId') roomId: string,
+    @Param('taskId') taskId: string,
+  ) {
+    const room = this.roomsService.getRoom(roomId);
+    const task = this.runtimeService.getTaskOrThrow(roomId, taskId);
+    if (!task.worktreePath) {
+      return { removed: false };
+    }
+    return this.worktreeService.removeWorktree(room.folderPath, task.worktreePath);
+  }
+
+  // -------------------- Mandate / Human Approvals Endpoints --------------------
+
+  @Get('rooms/:roomId/approvals')
+  listApprovals(
+    @Param('roomId') roomId: string,
+    @Query('pending') pending?: string,
+  ) {
+    this.roomsService.getRoom(roomId);
+    return this.runtimeService.listRoomApprovals(roomId, pending === 'true');
+  }
+
+  @Post('rooms/:roomId/approvals')
+  requestApproval(
+    @Param('roomId') roomId: string,
+    @Body()
+    body: {
+      agentId?: string;
+      taskId?: string;
+      question: string;
+      wait?: boolean;
+      timeoutMs?: number;
+    },
+  ) {
+    const room = this.roomsService.getRoom(roomId);
+    const targetId = body.agentId ?? room.leadAgentId;
+    const agent = room.agents.find((a) => a.id === targetId) ?? room.agents[0];
+    if (!agent) {
+      throw new NotFoundException('No agent found in room');
+    }
+    if (!body?.question?.trim()) {
+      throw new BadRequestException('question is required');
+    }
+    return this.runtimeService.requestApproval(room, agent, {
+      question: body.question.trim(),
+      taskId: body.taskId,
+      wait: body.wait,
+      timeoutMs: body.timeoutMs,
+    });
+  }
+
+  @Post('rooms/:roomId/approvals/:approvalId/resolve')
+  resolveApproval(
+    @Param('roomId') roomId: string,
+    @Param('approvalId') approvalId: string,
+    @Body()
+    body: {
+      decision: Exclude<ApprovalStatus, 'pending'>;
+      responseText?: string;
+    },
+  ) {
+    const room = this.roomsService.getRoom(roomId);
+    if (body.decision !== 'approved' && body.decision !== 'rejected') {
+      throw new BadRequestException('decision must be approved or rejected');
+    }
+    return this.runtimeService.resolveApproval(
+      room,
+      approvalId,
+      body.decision,
+      body.responseText,
+    );
+  }
+
+  // -------------------- Skills & MCP Endpoints --------------------
 
   @Post('rooms/:roomId/skills')
   upsertSkill(@Param('roomId') roomId: string, @Body() dto: UpsertSkillDto) {

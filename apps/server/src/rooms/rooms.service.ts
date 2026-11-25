@@ -15,6 +15,7 @@ import type {
   SkillAssignment,
 } from '@agent-office/shared';
 import { ConfigSyncService } from '../sync/config-sync.service';
+import { StateStoreService } from '../store/state-store.service';
 
 export interface CreateRoomDto {
   name: string;
@@ -70,15 +71,14 @@ interface RegistryFile {
 @Injectable()
 export class RoomsService implements OnModuleInit {
   private readonly rooms = new Map<string, RoomConfig>();
-  private readonly registryPath = resolve(
-    process.cwd(),
-    '..',
-    '..',
-    'data',
-    'rooms-registry.json',
-  );
+  private readonly legacyRegistryPath: string;
 
-  constructor(private readonly configSync: ConfigSyncService) {}
+  constructor(
+    private readonly configSync: ConfigSyncService,
+    private readonly stateStore: StateStoreService,
+  ) {
+    this.legacyRegistryPath = join(this.stateStore.dataDir, 'rooms-registry.json');
+  }
 
   async onModuleInit(): Promise<void> {
     await this.loadRegistry();
@@ -107,7 +107,8 @@ export class RoomsService implements OnModuleInit {
     // If this folder already has a room.json, load and register it instead of overwriting
     try {
       const existing = await this.loadRoomFromDisk(absPath);
-      await this.saveRegistry();
+      this.stateStore.upsertRegisteredRoom(existing.id, existing.folderPath);
+      await this.saveLegacyMirror();
       return existing;
     } catch {
       // Fresh room
@@ -126,11 +127,11 @@ export class RoomsService implements OnModuleInit {
         {
           id: leadId,
           name: `${dto.name.trim()} 主管`,
-          title: 'Team Lead',
+          title: 'Thin Router Lead',
           roleType: 'lead',
           provider: dto.leadProvider ?? 'antigravity',
           instructions:
-            '你是当前工作目录的主 Agent，负责理解需求、规划任务并协调房间内的子 Agent 完成工作。',
+            '你是当前工作目录的常驻轻量主管（Thin Router）。优先理解全局意图、拆解任务并通过 Orchestrator MCP（delegate_task）异步并行派发给房间内的专员（Worker），使用 check_task_status / recall_task_log 验收汇总，避免单线程阻塞包揽全部重活。',
           skills: [],
           mcpServers: [],
           avatar: { sprite: 'lead', deskIndex: 0, accentColor: '#38bdf8' },
@@ -144,7 +145,8 @@ export class RoomsService implements OnModuleInit {
 
     await this.persistRoom(room);
     this.rooms.set(room.id, room);
-    await this.saveRegistry();
+    this.stateStore.upsertRegisteredRoom(room.id, room.folderPath);
+    await this.saveLegacyMirror();
     return room;
   }
 
@@ -163,7 +165,8 @@ export class RoomsService implements OnModuleInit {
     if (!existed) {
       throw new NotFoundException(`Room ${roomId} not found`);
     }
-    await this.saveRegistry();
+    this.stateStore.removeRegisteredRoom(roomId);
+    await this.saveLegacyMirror();
     return { removed: true };
   }
 
@@ -406,29 +409,37 @@ export class RoomsService implements OnModuleInit {
   }
 
   private async loadRegistry(): Promise<void> {
+    const sqliteFolders = this.stateStore.listRegisteredFolders();
+    const folderSet = new Set<string>(sqliteFolders);
+
+    // Seamless migration from legacy rooms-registry.json if present
     try {
-      const raw = await readFile(this.registryPath, 'utf-8');
+      const raw = await readFile(this.legacyRegistryPath, 'utf-8');
       const data = JSON.parse(raw) as RegistryFile;
-      for (const folder of data.roomFolders ?? []) {
-        try {
-          await this.loadRoomFromDisk(folder);
-        } catch {
-          // Skip missing or deleted folders gracefully
-        }
+      for (const f of data.roomFolders ?? []) {
+        folderSet.add(f);
       }
     } catch {
-      // Registry file does not exist yet
+      // Legacy file may not exist
+    }
+
+    for (const folder of folderSet) {
+      try {
+        const room = await this.loadRoomFromDisk(folder);
+        this.stateStore.upsertRegisteredRoom(room.id, room.folderPath);
+      } catch {
+        // Skip missing or deleted folders gracefully
+      }
     }
   }
 
-  private async saveRegistry(): Promise<void> {
-    const dataDir = resolve(this.registryPath, '..');
-    await mkdir(dataDir, { recursive: true });
+  private async saveLegacyMirror(): Promise<void> {
+    await mkdir(this.stateStore.dataDir, { recursive: true });
     const payload: RegistryFile = {
       roomFolders: Array.from(this.rooms.values()).map((r) => r.folderPath),
     };
     await writeFile(
-      this.registryPath,
+      this.legacyRegistryPath,
       JSON.stringify(payload, null, 2),
       'utf-8',
     );
@@ -437,6 +448,11 @@ export class RoomsService implements OnModuleInit {
   private async persistRoom(room: RoomConfig): Promise<void> {
     const metaDir = join(room.folderPath, '.agent-office');
     await mkdir(metaDir, { recursive: true });
+    await writeFile(
+      join(metaDir, '.gitignore'),
+      '# Ephemeral Super-Agent runtime artifacts\nruns/\nworktrees/\n',
+      'utf-8',
+    );
     await writeFile(
       join(metaDir, 'room.json'),
       JSON.stringify(room, null, 2),

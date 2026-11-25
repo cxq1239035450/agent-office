@@ -1,10 +1,16 @@
 import type {
   AgentProfile,
+  ApprovalRequest,
+  ApprovalStatus,
   CliProvider,
+  DispatchTaskRequest,
+  DispatchTaskResponse,
   McpServerConfig,
   RoomConfig,
   RunTaskResult,
   SkillAssignment,
+  TaskLogRecallResult,
+  TaskRecord,
 } from '@agent-office/shared';
 
 export interface ProviderHealth {
@@ -106,10 +112,75 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ prompt }),
     }),
-  stopAgent: (roomId: string, agentId: string) =>
+  dispatchTask: (
+    roomId: string,
+    agentId: string,
+    body: DispatchTaskRequest,
+  ) =>
+    request<DispatchTaskResponse>(
+      `/api/rooms/${roomId}/agents/${agentId}/dispatch`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  passThrough: (
+    roomId: string,
+    agentId: string,
+    body: { prompt: string; async?: boolean; isolateWorktree?: boolean },
+  ) =>
+    request<DispatchTaskResponse>(
+      `/api/rooms/${roomId}/agents/${agentId}/pass-through`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  stopAgent: (roomId: string, agentId: string, taskId?: string) =>
     request<{ stopped: boolean }>(`/api/rooms/${roomId}/agents/${agentId}/stop`, {
       method: 'POST',
+      body: JSON.stringify({ taskId }),
     }),
+  listTasks: (roomId: string, limit = 30) =>
+    request<TaskRecord[]>(`/api/rooms/${roomId}/tasks?limit=${limit}`),
+  getTask: (roomId: string, taskId: string) =>
+    request<TaskRecord>(`/api/rooms/${roomId}/tasks/${taskId}`),
+  recallTaskLog: (
+    roomId: string,
+    taskId: string,
+    opts?: { offset?: number; limit?: number; grep?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
+    if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts?.grep) qs.set('grep', opts.grep);
+    const q = qs.toString();
+    return request<TaskLogRecallResult>(
+      `/api/rooms/${roomId}/tasks/${taskId}/log${q ? `?${q}` : ''}`,
+    );
+  },
+  cleanupWorktree: (roomId: string, taskId: string) =>
+    request<{ removed: boolean }>(
+      `/api/rooms/${roomId}/tasks/${taskId}/worktree`,
+      { method: 'DELETE' },
+    ),
+  listApprovals: (roomId: string, pendingOnly = true) =>
+    request<ApprovalRequest[]>(
+      `/api/rooms/${roomId}/approvals?pending=${pendingOnly ? 'true' : 'false'}`,
+    ),
+  resolveApproval: (
+    roomId: string,
+    approvalId: string,
+    decision: Exclude<ApprovalStatus, 'pending'>,
+    responseText?: string,
+  ) =>
+    request<ApprovalRequest>(
+      `/api/rooms/${roomId}/approvals/${approvalId}/resolve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ decision, responseText }),
+      },
+    ),
   upsertSkill: (
     roomId: string,
     body: { id: string; description?: string; content: string; enabled?: boolean },
